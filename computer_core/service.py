@@ -127,8 +127,8 @@ class ComputerService:
 
     def type_text(self, text: str):
         tcfg = self.config.get("work", {}).get("typing", {})
-        from input_engine import text
-        text.type_text(text, tcfg)
+        from input_engine import text as text_engine
+        text_engine.type_text(text, tcfg)
 
     # ---------- 绘画 ----------
     def set_brush(self, n: int):
