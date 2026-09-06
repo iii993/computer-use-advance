@@ -70,6 +70,19 @@ class ComputerService:
         img.convert("RGB").save(buf, format="PNG")
         return buf.getvalue()
 
+    def screenshot_model(self, max_pixels: int = 640000) -> tuple:
+        """截原始图并等比缩到 max_pixels 预算内(默认64万=DSH发送前图像预算),
+        返回 (jpeg_bytes, out_w, out_h). 输出尺寸确定, 坐标用图内像素即可准确换算."""
+        img = ImageGrab.grab(all_screens=True)
+        w, h = img.size
+        if w * h > max_pixels:
+            scale = (max_pixels / (w * h)) ** 0.5
+            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+            img = img.resize((nw, nh), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return buf.getvalue(), img.width, img.height
+
     def screenshot_base64(self, scale=None, quality=None) -> str:
         return base64.b64encode(self.screenshot(scale, quality)).decode()
 

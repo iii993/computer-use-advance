@@ -4,6 +4,7 @@
   真实屏幕坐标 = 归一化值 / 1000 × 屏幕尺寸
 协议: MCP (JSON-RPC 2.0 over stdio, 每行一条消息). stdout 只输出协议, 日志走文件/stderr.
 """
+import base64
 import json
 import os
 import sys
@@ -31,43 +32,51 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "computer", "version": "2.0.0"}
 
 
-# ---------- 归一化坐标换算(0-1000 -> 屏幕像素) ----------
-def _norm_x(v) -> float:
-    w, _ = SERVICE.screen_size()
-    return float(v) / 1000.0 * w
+# ---------- 截图内像素坐标换算(图内像素 -> 屏幕像素) ----------
+# 截图时记录当前输出图尺寸(_img_w/_img_h), 换算系数 = 屏幕尺寸 / 截图尺寸.
+_SCREEN_W, _SCREEN_H = SERVICE.screen_size()
+_img_w, _img_h = _SCREEN_W, _SCREEN_H  # 初始=屏幕(未截图时1:1)
 
 
-def _norm_y(v) -> float:
-    _, h = SERVICE.screen_size()
-    return float(v) / 1000.0 * h
+def _set_img_size(w: int, h: int):
+    global _img_w, _img_h
+    _img_w, _img_h = max(1, w), max(1, h)
 
 
-def _norm_point(p) -> tuple:
-    return (_norm_x(p[0]), _norm_y(p[1]))
+def _img_x(v) -> float:
+    return float(v) * _SCREEN_W / _img_w
 
 
-def _norm_cursor(cursor) -> list:
-    w, h = SERVICE.screen_size()
-    return [round(cursor[0] / w * 1000, 1), round(cursor[1] / h * 1000, 1)]
+def _img_y(v) -> float:
+    return float(v) * _SCREEN_H / _img_h
+
+
+def _img_point(p) -> tuple:
+    return (_img_x(p[0]), _img_y(p[1]))
+
+
+def _img_cursor(cursor) -> list:
+    return [round(cursor[0] / _SCREEN_W * _img_w, 1),
+            round(cursor[1] / _SCREEN_H * _img_h, 1)]
 
 
 TOOLS = [
-    {"name": "screenshot", "description": "截取全屏图像. 宿主可能缩放图像显示, 坐标请一律用 0-1000 归一化(真实坐标=值/1000×屏幕尺寸).",
+    {"name": "screenshot", "description": "截取全屏图像(等比缩到约64万像素, 尺寸见返回说明). 坐标请用【截图内像素坐标】: x范围0-截图宽, y范围0-截图高, server自动换算真实屏幕.",
      "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "get_state", "description": "获取当前状态(模式/光标[0-1000归一化]/画笔大小).",
+    {"name": "get_state", "description": "获取当前状态(模式/光标[截图内像素]/画笔大小).",
      "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "click", "description": "点击(x,y为0-1000归一化坐标).",
+    {"name": "click", "description": "点击(x,y为截图内像素坐标, 以最近一次截图尺寸为准).",
      "inputSchema": {"type": "object",
                      "properties": {"x": {"type": "number"}, "y": {"type": "number"},
                                     "button": {"type": "string", "enum": ["left", "right", "middle"]},
                                     "clicks": {"type": "integer"}},
                      "required": ["x", "y"]}},
-    {"name": "drag", "description": "拖拽: 按住左键从(x1,y1)到(x2,y2), 坐标为0-1000归一化.",
+    {"name": "drag", "description": "拖拽: 按住左键从(x1,y1)到(x2,y2), 坐标为截图内像素.",
      "inputSchema": {"type": "object",
                      "properties": {"x1": {"type": "number"}, "y1": {"type": "number"},
                                     "x2": {"type": "number"}, "y2": {"type": "number"}},
                      "required": ["x1", "y1", "x2", "y2"]}},
-    {"name": "slide", "description": "相对滑动(游戏模式防检测): dx/dy为0-1000归一化相对位移(如100=向右屏幕宽10%).",
+    {"name": "slide", "description": "相对滑动(游戏模式防检测): dx/dy为截图内像素相对位移.",
      "inputSchema": {"type": "object",
                      "properties": {"dx": {"type": "number"}, "dy": {"type": "number"}},
                      "required": ["dx", "dy"]}},
@@ -75,7 +84,7 @@ TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {"seconds": {"type": "number"}},
                      "required": ["seconds"]}},
-    {"name": "scroll", "description": "移动到(x,y)[0-1000归一化]并滚轮滚动(dy>0上滚, 每次一格).",
+    {"name": "scroll", "description": "移动到(x,y)[截图内像素]并滚轮滚动(dy>0上滚, 每次一格).",
      "inputSchema": {"type": "object",
                      "properties": {"x": {"type": "number"}, "y": {"type": "number"},
                                     "dy": {"type": "number"}},
@@ -96,18 +105,18 @@ TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {"keys": {"type": "array", "items": {"type": "string"}}},
                      "required": ["keys"]}},
-    {"name": "mouse_down", "description": "按下左键(x,y归一化, 配合mouse_up画框/拖拽).",
+    {"name": "mouse_down", "description": "按下左键(x,y截图内像素, 配合mouse_up画框/拖拽).",
      "inputSchema": {"type": "object",
                      "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
                      "required": ["x", "y"]}},
-    {"name": "mouse_up", "description": "释放左键(x,y归一化).",
+    {"name": "mouse_up", "description": "释放左键(x,y截图内像素).",
      "inputSchema": {"type": "object",
                      "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
                      "required": ["x", "y"]}},
     {"name": "set_brush", "description": "设置画笔大小(绘画模式).",
      "inputSchema": {"type": "object",
                      "properties": {"size": {"type": "integer"}}, "required": ["size"]}},
-    {"name": "draw_curve", "description": "按控制点绘制平滑曲线(注入外部软件带压力). points为[[x,y],...] 0-1000归一化坐标.",
+    {"name": "draw_curve", "description": "按控制点绘制平滑曲线(注入外部软件带压力). points为[[x,y],...] 截图内像素坐标.",
      "inputSchema": {"type": "object",
                      "properties": {"points": {"type": "array",
                                                "items": {"type": "array", "items": {"type": "number"}}},
@@ -123,7 +132,7 @@ TOOLS = [
                      "required": ["key", "value"]}},
     {"name": "check_vision", "description": "检测MCP服务端配置的模型是否支持识图.",
      "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "run_actions", "description": "批量执行多个动作(一次决策多次操作, 省往返省token). actions为动作对象数组, 每个对象含 action 字段+该动作参数(同各单工具), 坐标0-1000归一化; 支持 click/double_click/right_click/drag/mouse_down/mouse_up/scroll/type_text/press_key/key_down/key_up/combo/hotkey/wait/slide/switch_mode/set_config/take_screenshot.",
+    {"name": "run_actions", "description": "批量执行多个动作(一次决策多次操作, 省往返省token). actions为动作对象数组, 每个对象含 action 字段+该动作参数(同各单工具), 坐标用截图内像素; 支持 click/double_click/right_click/drag/mouse_down/mouse_up/scroll/type_text/press_key/key_down/key_up/combo/hotkey/wait/slide/switch_mode/set_config/take_screenshot.",
      "inputSchema": {"type": "object",
                      "properties": {"actions": {"type": "array",
                                                 "items": {"type": "object"}}},
@@ -148,21 +157,21 @@ def _run_single(action: dict) -> dict:
     act = action.get("action") or action.get("name")
     try:
         if act == "click":
-            svc.click(_norm_x(action.get("x", 0)), _norm_y(action.get("y", 0)),
+            svc.click(_img_x(action.get("x", 0)), _img_y(action.get("y", 0)),
                       action.get("button", "left"), int(action.get("clicks", 1)))
         elif act == "double_click":
-            svc.click(_norm_x(action["x"]), _norm_y(action["y"]), clicks=2)
+            svc.click(_img_x(action["x"]), _img_y(action["y"]), clicks=2)
         elif act == "right_click":
-            svc.click(_norm_x(action["x"]), _norm_y(action["y"]), button="right")
+            svc.click(_img_x(action["x"]), _img_y(action["y"]), button="right")
         elif act == "drag":
-            svc.drag(_norm_x(action["x1"]), _norm_y(action["y1"]),
-                     _norm_x(action["x2"]), _norm_y(action["y2"]))
+            svc.drag(_img_x(action["x1"]), _img_y(action["y1"]),
+                     _img_x(action["x2"]), _img_y(action["y2"]))
         elif act == "mouse_down":
-            svc.mouse_down(_norm_x(action["x"]), _norm_y(action["y"]))
+            svc.mouse_down(_img_x(action["x"]), _img_y(action["y"]))
         elif act == "mouse_up":
-            svc.mouse_up(_norm_x(action["x"]), _norm_y(action["y"]))
+            svc.mouse_up(_img_x(action["x"]), _img_y(action["y"]))
         elif act == "scroll":
-            svc.scroll(_norm_x(action.get("x", 500)), _norm_y(action.get("y", 500)),
+            svc.scroll(_img_x(action.get("x", _img_w // 2)), _img_y(action.get("y", _img_h // 2)),
                        action.get("dx", 0), action.get("dy", -1))
         elif act == "type_text":
             svc.type_text(action.get("text", ""))
@@ -177,9 +186,7 @@ def _run_single(action: dict) -> dict:
         elif act == "hotkey":
             svc.hotkey(action.get("keys", []))
         elif act == "slide":
-            w, h = svc.screen_size()
-            svc.slide(action.get("dx", 0) / 1000.0 * w,
-                      action.get("dy", 0) / 1000.0 * h)
+            svc.slide(_img_x(action.get("dx", 0)), _img_y(action.get("dy", 0)))
         elif act == "wait":
             svc.wait(action.get("seconds", 1))
         elif act == "switch_mode":
@@ -190,7 +197,7 @@ def _run_single(action: dict) -> dict:
             n = svc.set_brush(action.get("size", 1))
             return {"ok": True, "brush": n}
         elif act == "draw_curve":
-            pts = [_norm_point(p) for p in action.get("points", [])]
+            pts = [_img_point(p) for p in action.get("points", [])]
             return svc.draw_curve(pts, action.get("inject", True))
         elif act == "take_screenshot":
             return {"ok": True, "note": "截图将在下轮由模型主动调用"}
@@ -208,12 +215,14 @@ def handle_tool_call(name: str, args: dict) -> dict:
     svc = SERVICE
     try:
         if name == "screenshot":
-            b64 = svc.screenshot_base64()
+            img_bytes, w, h = svc.screenshot_model()
+            _set_img_size(w, h)
+            b64 = base64.b64encode(img_bytes).decode()
             return _image_result(b64, "image/jpeg",
-                                 "截图. 注意: 宿主可能缩放图像显示, 所有坐标请用 0-1000 归一化(真实坐标=值/1000×屏幕尺寸)")
+                                 "截图尺寸: " + str(w) + "x" + str(h) + " 像素. 坐标请用截图内像素(0-" + str(w) + ", 0-" + str(h) + "), 无需自己换算")
         if name == "get_state":
             st = svc.get_state()
-            st["cursor"] = _norm_cursor(st["cursor"])
+            st["cursor"] = _img_cursor(st["cursor"])
             return _text_result(json.dumps(st, ensure_ascii=False))
         if name == "run_actions":
             results = [_run_single(a) for a in args.get("actions", [])]
