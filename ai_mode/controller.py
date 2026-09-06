@@ -4,6 +4,7 @@
 """
 import base64
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -15,6 +16,33 @@ log = get_logger("ai")
 TEST_IMAGE_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+
+
+def _read_dsh_credentials(name: str) -> str:
+    """从 DSH 凭据文件(H:/dsh-home/.credentials.yaml)的 refs 段读取密钥.
+
+    轻量解析: 只匹配 refs: 段下的 "  NAME: value" 行, 无需 yaml 依赖.
+    """
+    dsh_home = os.environ.get("DSH_HOME", r"H:\dsh-home")
+    path = os.path.join(dsh_home, ".credentials.yaml")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return ""
+    in_refs = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "refs:":
+            in_refs = True
+            continue
+        if in_refs:
+            # 离开 refs 段: 遇到顶格或非缩进的行
+            if stripped and line[0] != " " and stripped != "refs:":
+                break
+            if stripped.startswith(name + ":"):
+                return stripped.split(":", 1)[1].strip().strip("'\"")
+    return ""
 
 SYSTEM_PROMPT = """你是电脑操控 AI。你通过截图观察屏幕, 调用动作完成任务。
 可用动作(每次只输出一个 JSON):
@@ -50,7 +78,12 @@ class AIController:
         ai_cfg = self.config.get("ai", {})
         base_url = (ai_cfg.get("base_url") or "").rstrip("/")
         model = ai_cfg.get("model") or ""
-        api_key = ai_cfg.get("api_key") or ""
+        # api_key 优先级: config.json > 环境变量 > DSH 凭据文件(与对话相同)
+        api_key = (ai_cfg.get("api_key") or ""
+                   or os.environ.get("DEEPSEEK_API_KEY") or ""
+                   or os.environ.get("TOKENRHYTHM_API_KEY") or ""
+                   or _read_dsh_credentials("DEEPSEEK_API_KEY") or ""
+                   or _read_dsh_credentials("TOKENRHYTHM_API_KEY") or "")
         if not base_url or not model:
             raise VisionError("未配置 ai.base_url / ai.model, 无法启动 AI 模式")
 

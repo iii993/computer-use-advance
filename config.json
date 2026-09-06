@@ -8,7 +8,7 @@
   "mouse": {
     "move_steps": 24,
     "move_interval_ms": 5,
-    "jitter_px": 1.8,
+    "jitter_px": 1.2,
     "jitter_enabled": true,
     "accel_curve": true
   },
@@ -114,9 +114,9 @@
     }
   },
   "ai": {
-    "base_url": "",
+    "base_url": "https://api.deepseek.com",
     "api_key": "",
-    "model": "",
+    "model": "deepseek-v4-flash-vision-exp",
     "max_steps": 20,
     "screenshot_scale": 0.6,
     "screenshot_quality": 60,

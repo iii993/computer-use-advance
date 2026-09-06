@@ -17,7 +17,10 @@
 托盘菜单 → "🤖 AI 任务" → 输入任务描述(如"打开计算器算 3+5") → AI 自动:
 截图观察屏幕 → 模型决策动作 → 切换游戏/绘画/工作模式执行 → 直到完成。
 
-- **模型配置**: `config.json` 的 `ai` 段 (`base_url`/`api_key`/`model`, 支持 OpenAI 官方与本地兼容 API)
+- **模型配置**: `config.json` 的 `ai` 段。默认与 DSH 对话相同
+  (base_url=`https://api.deepseek.com`, model=`deepseek-v4-flash-vision-exp`,
+  api_key 自动读取 DSH 凭据/环境变量), 可手动改为其他 OpenAI 兼容 API
+  (官方/本地 Ollama 均可)
 - **识图能力检测**: 启动任务前发 1x1 测试图, 模型不支持图像输入时**报错禁用**
 - **模型自改**: AI 可通过 `set_config` 修改白名单内的参数(见 `ai.whitelist`), 立即写入 config.json
 - **坐标换算**: 截图按 `screenshot_scale` 缩放, AI 返回的坐标自动除以缩放比

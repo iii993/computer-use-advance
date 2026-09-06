@@ -76,9 +76,9 @@ DEFAULT_CONFIG = {
         },
     },
     "ai": {
-        "base_url": "",            # OpenAI 兼容 API 地址(留空=禁用AI模式)
-        "api_key": "",             # API 密钥
-        "model": "",               # 模型名(如 gpt-4o / qwen-vl-max)
+        "base_url": "https://api.deepseek.com",   # 默认与DSH对话相同(deepseek-official); 可改官方/本地兼容API
+        "api_key": "",            # 留空则读环境变量 DEEPSEEK_API_KEY / TOKENRHYTHM_API_KEY
+        "model": "deepseek-v4-flash-vision-exp",  # 默认与DSH对话相同(支持视觉); 可手动改其他
         "max_steps": 20,           # 单任务最大动作步数
         "screenshot_scale": 0.6,   # 截图缩放(降token)
         "screenshot_quality": 60,  # JPEG 质量
