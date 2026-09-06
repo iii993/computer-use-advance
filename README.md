@@ -1,7 +1,7 @@
 # 电脑操控插件 (Computer Control Plugin) - 使用说明
 
 一个 Windows 电脑操控插件: 提供 **游戏 / 绘画 / 工作** 三种操控模式 + **AI 指挥官** 自动模式,
-支持全局热键切换、触笔压力模拟、DSH MCP 工具集成。
+支持全局热键切换、触笔压力模拟。(DSH MCP 集成已卸载, 见第 9 节)
 
 ---
 
@@ -234,10 +234,12 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 
 ## 9 🔌 DSH MCP 插件集成
 
-本项目已注册为 DSH 的 MCP 工具(名称 `mcp-computer`),
-注册位置: `H:\dsh-home\profiles\web\cordis.patch.yml`
+> ⚠️ **已于 2026-09-06 从 DSH 卸载**(agent 场景作用有限)。代码保留在 `computer_mcp/`。
+> 重新启用: 在 `H:\dsh-home\profiles\web\cordis.patch.yml` 加回 mcp-computer 注册块后重启 DSH web。
 
-**重启 DSH web 后**, agent 可直接调用以下工具:
+原注册位置: `H:\dsh-home\profiles\web\cordis.patch.yml`
+
+启用时 agent 可调用以下工具:
 
 | 工具 | 用途 |
 | --- | --- |
@@ -249,7 +251,6 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 | `mcp__computer__draw_curve` / `set_brush` | 绘画操作 |
 | `mcp__computer__set_config` | 白名单内改配置 |
 | `mcp__computer__check_vision` | 检测模型识图能力 |
-| `mcp__computer__run_ai_task` | 执行完整 AI 任务循环 |
 
 ---
 
