@@ -88,11 +88,6 @@ TOOLS = [
                      "required": ["key", "value"]}},
     {"name": "check_vision", "description": "检测当前配置的模型是否支持识图(发测试图, 不支持会报错).",
      "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "run_ai_task", "description": "执行完整AI任务循环: 截图->模型决策->动作, 直到完成.",
-     "inputSchema": {"type": "object",
-                     "properties": {"task": {"type": "string"},
-                                    "max_steps": {"type": "integer"}},
-                     "required": ["task"]}},
 ]
 
 
@@ -156,9 +151,6 @@ def handle_tool_call(name: str, args: dict) -> dict:
             return _text_result(json.dumps(r, ensure_ascii=False))
         if name == "check_vision":
             r = AI.check_vision()
-            return _text_result(json.dumps(r, ensure_ascii=False))
-        if name == "run_ai_task":
-            r = AI.run_task(args.get("task", ""), args.get("max_steps"))
             return _text_result(json.dumps(r, ensure_ascii=False))
         return _text_result(json.dumps({"ok": False, "error": "未知工具: " + name}))
     except Exception as e:
