@@ -43,6 +43,11 @@ class ComputerService:
         self.game.cfg = self.config.get("game", {})
         self.work.cfg = self.config.get("work", {})
 
+    # ---------- 屏幕信息 ----------
+    def screen_size(self) -> tuple:
+        """当前虚拟屏幕尺寸 (w, h)"""
+        return ImageGrab.grab(all_screens=True).size
+
     # ---------- 截图 ----------
     def screenshot(self, scale: float | None = None, quality: int | None = None) -> bytes:
         """全屏截图 -> JPEG bytes(缩放压缩降 token)"""
