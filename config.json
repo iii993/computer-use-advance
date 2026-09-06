@@ -118,8 +118,8 @@
     "api_key": "",
     "model": "deepseek-v4-flash-vision-exp",
     "max_steps": 20,
-    "screenshot_scale": 0.6,
-    "screenshot_quality": 60,
+    "screenshot_scale": 1.0,
+    "screenshot_quality": 85,
     "whitelist": [
       "mouse.jitter_px",
       "mouse.move_steps",

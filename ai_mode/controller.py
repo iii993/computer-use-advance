@@ -58,7 +58,7 @@ SYSTEM_PROMPT = """你是电脑操控 AI。你通过截图观察屏幕, 调用�
 {"action":"set_config","key":"mouse.jitter_px","value":1.5}  修改配置(仅白名单)
 {"action":"finish","result":"任务完成说明"}         完成任务
 规则:
-- 坐标基于你看到的截图, 图片已缩放, 坐标需换算回真实屏幕(缩放比见提示)
+- 截图使用原始分辨率, 你输出的坐标就是真实屏幕坐标, 直接使用
 - 操作后如需确认效果, 可再次截图观察
 - 不要臆想屏幕内容, 以截图为准
 - 任务完成后输出 finish"""
@@ -151,8 +151,7 @@ class AIController:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": self._content(
-                "任务: " + task + "\n截图已缩放 " + format(self.scale, ".2f") +
-                " 倍, 坐标需除以缩放比换算为真实屏幕坐标。当前状态: " + state
+                "任务: " + task + "\n截图使用原始分辨率, 坐标与真实屏幕一致, 直接使用。当前状态: " + state
             )},
         ]
 

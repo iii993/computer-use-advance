@@ -103,9 +103,8 @@ def handle_tool_call(name: str, args: dict) -> dict:
     try:
         if name == "screenshot":
             b64 = svc.screenshot_base64()
-            scale = float(svc.config.get("ai", {}).get("screenshot_scale", 0.6))
             return _image_result(b64, "image/jpeg",
-                                 "截图(缩放比 " + format(scale, ".2f") + ", 坐标换算: 真实坐标 = 图内坐标 / 缩放比)")
+                                 "截图(原始分辨率, 坐标与真实屏幕一致, 直接使用)")
         if name == "get_state":
             return _text_result(json.dumps(svc.get_state(), ensure_ascii=False))
         if name == "click":

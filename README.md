@@ -171,7 +171,7 @@ python main.py
     "api_key": "",                            // 留空自动读 DSH 凭据/环境变量
     "model": "deepseek-v4-flash-vision-exp",  // 默认与 DSH 对话相同(支持视觉)
     "max_steps": 20,                            // 单任务最大步数
-    "screenshot_scale": 0.6,                    // 截图缩放(降 token)
+    "screenshot_scale": 1.0,                    // 1.0=原始分辨率, 坐标与屏幕一致
     "screenshot_quality": 60                    // JPEG 质量
 }
 ```
@@ -266,7 +266,7 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 | work.typing.clipboard_threshold | 20 | 剪贴板输入阈值(字符) |
 | ai.base_url / model / api_key | 对话相同 | AI 模式模型配置 |
 | ai.max_steps | 20 | AI 任务最大步数 |
-| ai.screenshot_scale / quality | 0.6/60 | 截图压缩参数 |
+| ai.screenshot_scale / quality | 1.0/85 | 截图(1.0=原始分辨率不缩放) / JPEG质量 |
 | ai.whitelist | 10项 | 模型可修改的白名单 |
 
 ---

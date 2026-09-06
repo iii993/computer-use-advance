@@ -50,7 +50,8 @@ class ComputerService:
         scale = scale if scale is not None else float(ai_cfg.get("screenshot_scale", 0.6))
         quality = quality if quality is not None else int(ai_cfg.get("screenshot_quality", 60))
         img = ImageGrab.grab(all_screens=True)
-        if scale and scale < 1.0:
+        if scale and 0 < scale < 1.0:
+            # 仅当显式配置缩放时压缩(默认 1.0 保持原始分辨率, 坐标与屏幕一致)
             w, h = img.size
             img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
         buf = io.BytesIO()

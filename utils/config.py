@@ -80,8 +80,8 @@ DEFAULT_CONFIG = {
         "api_key": "",            # 留空则读环境变量 DEEPSEEK_API_KEY / TOKENRHYTHM_API_KEY
         "model": "deepseek-v4-flash-vision-exp",  # 默认与DSH对话相同(支持视觉); 可手动改其他
         "max_steps": 20,           # 单任务最大动作步数
-        "screenshot_scale": 0.6,   # 截图缩放(降token)
-        "screenshot_quality": 60,  # JPEG 质量
+        "screenshot_scale": 1.0,   # 截图缩放(1.0=原始分辨率不缩放, 坐标与屏幕一致)
+        "screenshot_quality": 85,  # JPEG 质量
         "whitelist": [             # 模型可修改的配置键(白名单)
             "mouse.jitter_px", "mouse.move_steps", "mouse.move_interval_ms",
             "game.tap_interval_ms", "game.slide.jitter_px", "game.slide.smooth_ms",
