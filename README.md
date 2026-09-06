@@ -15,10 +15,11 @@
 
 ```bash
 cd H:\cu-a
-python -m pip install --target vendor pynput keyboard pyautogui pystray Pillow
+python -m pip install --target vendor pynput keyboard pystray Pillow
 ```
 
-(依赖安装在项目 vendor 目录, 不占用 C 盘)
+(依赖安装在项目 vendor 目录, 不占用 C 盘; 全部为纯 wheel 包, 无需编译)
+> 若国内源不可用, 直接使用官方源: `python -m pip install --target vendor ...`
 
 ## 使用
 
