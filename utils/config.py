@@ -75,6 +75,20 @@ DEFAULT_CONFIG = {
             "lock": ["win", "l"],
         },
     },
+    "ai": {
+        "base_url": "",            # OpenAI 兼容 API 地址(留空=禁用AI模式)
+        "api_key": "",             # API 密钥
+        "model": "",               # 模型名(如 gpt-4o / qwen-vl-max)
+        "max_steps": 20,           # 单任务最大动作步数
+        "screenshot_scale": 0.6,   # 截图缩放(降token)
+        "screenshot_quality": 60,  # JPEG 质量
+        "whitelist": [             # 模型可修改的配置键(白名单)
+            "mouse.jitter_px", "mouse.move_steps", "mouse.move_interval_ms",
+            "game.tap_interval_ms", "game.slide.jitter_px", "game.slide.smooth_ms",
+            "draw.brush.step", "draw.replay_interval_ms",
+            "work.typing.delay_min_ms", "work.typing.delay_max_ms"
+        ],
+    },
 }
 
 def _deep_merge(base: dict, override: dict) -> dict:

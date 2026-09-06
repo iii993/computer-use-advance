@@ -1,6 +1,6 @@
 # 电脑操控插件 (Computer Control Plugin)
 
-一个 Windows 电脑操控插件, 提供三种模式, 全局热键一键切换。
+一个 Windows 电脑操控插件, 提供三种模式 + AI 指挥官, 全局热键一键切换, 并注册为 DSH MCP 工具。
 
 ## 功能
 
@@ -9,7 +9,32 @@
 | 🎮 游戏模式 | `Ctrl+Shift+1` | 按键宏(连点/按住/组合) + 鼠标直线滑动(带随机抖动/弯曲防检测) |
 | 🎨 绘画模式 | `Ctrl+Shift+2` | 曲线绘制(控制点系统) + `Alt+滚轮`调画笔大小 + 触笔压力注入 + 演示画布 |
 | 💼 工作模式 | `Ctrl+Shift+3` | 文字输入(自然节奏) + 简单点击 + 简化快捷键 |
+| 🤖 AI 模式 | 托盘→"AI 任务" | 截图→模型决策→自动切换三模式执行任务 |
 | 退出 | `Ctrl+Shift+0` | 退出插件 |
+
+## 🤖 AI 模式 (AI 指挥官)
+
+托盘菜单 → "🤖 AI 任务" → 输入任务描述(如"打开计算器算 3+5") → AI 自动:
+截图观察屏幕 → 模型决策动作 → 切换游戏/绘画/工作模式执行 → 直到完成。
+
+- **模型配置**: `config.json` 的 `ai` 段 (`base_url`/`api_key`/`model`, 支持 OpenAI 官方与本地兼容 API)
+- **识图能力检测**: 启动任务前发 1x1 测试图, 模型不支持图像输入时**报错禁用**
+- **模型自改**: AI 可通过 `set_config` 修改白名单内的参数(见 `ai.whitelist`), 立即写入 config.json
+- **坐标换算**: 截图按 `screenshot_scale` 缩放, AI 返回的坐标自动除以缩放比
+
+## 🔌 DSH MCP 插件
+
+本项目同时注册为 DSH 的 MCP 工具 (`mcp-computer`, 已写入 `H:\dsh-home\profiles\web\cordis.patch.yml`)。
+**重启 DSH web 后**, agent 可直接调用:
+
+- `mcp__computer__screenshot` - 截图观察屏幕
+- `mcp__computer__click` / `drag` / `slide` - 鼠标操作
+- `mcp__computer__type_text` / `press_key` / `combo` - 键盘输入
+- `mcp__computer__switch_mode` - 切换三模式
+- `mcp__computer__draw_curve` / `set_brush` - 绘画
+- `mcp__computer__set_config` - 白名单改配置
+- `mcp__computer__check_vision` - 检测模型识图能力
+- `mcp__computer__run_ai_task` - 执行完整 AI 任务循环
 
 ## 安装
 
@@ -65,11 +90,14 @@ python main.py
 ## 项目结构
 
 ```
-main.py            入口: 托盘 + 全局热键 + 模式分发
+main.py            入口: 托盘 + 全局热键 + 模式分发 + AI任务
+computer_core/     操控服务(截图/动作/白名单配置)
+ai_mode/           AI 指挥官(识图检测 + 任务循环)
+computer_mcp/      MCP server(DSH 插件)
 utils/             配置 / 日志 / 几何算法(RDP)
 input_engine/      鼠标 / 键盘 / 文字 / 触笔压力注入
 modes/             游戏 / 绘画 / 工作 模式
-ui/                托盘 / 悬浮指示器 / 演示画布
+ui/                托盘 / 悬浮指示器 / 演示画布 / AI任务窗口
 ```
 
 ## 免责声明

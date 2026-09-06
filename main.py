@@ -68,6 +68,21 @@ class App:
         draw = self.modes["draw"]
         draw.open_canvas()
 
+    # ---------- AI 任务 ----------
+    def open_ai_task(self):
+        """弹出 AI 任务窗口(托盘菜单触发)"""
+        if getattr(self, "_ai_task_win", None) and self._ai_task_win.winfo_exists():
+            self._ai_task_win.lift()
+            return
+        from ai_mode.controller import AIController
+        from computer_core.service import ComputerService
+        from ui.ai_task import AITaskWindow
+
+        svc = ComputerService(self.config)
+        ai = AIController(svc)
+        self._ai_task_win = AITaskWindow(self.tk_root, ai,
+                                         on_close=lambda: setattr(self, "_ai_task_win", None))
+
     # ---------- 全局热键 ----------
     def register_hotkeys(self):
         import keyboard as kb

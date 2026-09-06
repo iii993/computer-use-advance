@@ -8,7 +8,7 @@
   "mouse": {
     "move_steps": 24,
     "move_interval_ms": 5,
-    "jitter_px": 1.2,
+    "jitter_px": 1.8,
     "jitter_enabled": true,
     "accel_curve": true
   },
@@ -112,5 +112,25 @@
         "l"
       ]
     }
+  },
+  "ai": {
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "max_steps": 20,
+    "screenshot_scale": 0.6,
+    "screenshot_quality": 60,
+    "whitelist": [
+      "mouse.jitter_px",
+      "mouse.move_steps",
+      "mouse.move_interval_ms",
+      "game.tap_interval_ms",
+      "game.slide.jitter_px",
+      "game.slide.smooth_ms",
+      "draw.brush.step",
+      "draw.replay_interval_ms",
+      "work.typing.delay_min_ms",
+      "work.typing.delay_max_ms"
+    ]
   }
 }

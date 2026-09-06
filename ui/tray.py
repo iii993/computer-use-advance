@@ -24,6 +24,9 @@ class TrayApp:
         def open_canvas(icon, item):
             self.app.open_draw_canvas()
 
+        def open_ai(icon, item):
+            self.app.open_ai_task()
+
         def quit_app(icon, item):
             self.app.quit()
 
@@ -33,6 +36,7 @@ class TrayApp:
             MenuItem("💼 工作模式", make_switch("work")),
             Menu.SEPARATOR,
             MenuItem("🖼 打开绘画画布", open_canvas),
+            MenuItem("🤖 AI 任务", open_ai),
             Menu.SEPARATOR,
             MenuItem("退出", quit_app),
         )
