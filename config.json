@@ -1,0 +1,116 @@
+{
+  "hotkeys": {
+    "game": "ctrl+shift+1",
+    "draw": "ctrl+shift+2",
+    "work": "ctrl+shift+3",
+    "quit": "ctrl+shift+0"
+  },
+  "mouse": {
+    "move_steps": 24,
+    "move_interval_ms": 5,
+    "jitter_px": 1.2,
+    "jitter_enabled": true,
+    "accel_curve": true
+  },
+  "game": {
+    "tap_interval_ms": 180,
+    "tap_jitter_ms": 30,
+    "slide": {
+      "smooth_ms": 800,
+      "jitter_px": 2.0,
+      "curve_bend": 0.06
+    },
+    "macros": {
+      "连点攻击": {
+        "hotkey": "f6",
+        "type": "tap_repeat",
+        "key": "space",
+        "times": 3
+      },
+      "视角左拉": {
+        "hotkey": "f7",
+        "type": "slide",
+        "dx": -250,
+        "dy": 0
+      },
+      "视角右拉": {
+        "hotkey": "f8",
+        "type": "slide",
+        "dx": 250,
+        "dy": 0
+      },
+      "复制粘贴": {
+        "hotkey": "f9",
+        "type": "combo",
+        "keys": [
+          "ctrl",
+          "c"
+        ]
+      }
+    }
+  },
+  "draw": {
+    "sample_min_dist": 2,
+    "sample_interval_ms": 8,
+    "rdp_epsilon": 4,
+    "bezier_segments": 8,
+    "replay_interval_ms": 8,
+    "replay_speed": 1.0,
+    "brush": {
+      "modifier": "alt",
+      "step": 2,
+      "min": 1,
+      "max": 200
+    },
+    "pen": {
+      "pressure_min": 50,
+      "pressure_max": 1024,
+      "slow_speed": 50,
+      "fast_speed": 500,
+      "smooth_window": 4,
+      "toggle_key": "p"
+    }
+  },
+  "work": {
+    "typing": {
+      "delay_min_ms": 40,
+      "delay_max_ms": 120,
+      "word_pause_ms": 150,
+      "clipboard_threshold": 20
+    },
+    "shortcuts": {
+      "copy": [
+        "ctrl",
+        "c"
+      ],
+      "paste": [
+        "ctrl",
+        "v"
+      ],
+      "cut": [
+        "ctrl",
+        "x"
+      ],
+      "undo": [
+        "ctrl",
+        "z"
+      ],
+      "select_all": [
+        "ctrl",
+        "a"
+      ],
+      "switch_win": [
+        "alt",
+        "tab"
+      ],
+      "show_desktop": [
+        "win",
+        "d"
+      ],
+      "lock": [
+        "win",
+        "l"
+      ]
+    }
+  }
+}
