@@ -50,6 +50,15 @@ TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {"dx": {"type": "number"}, "dy": {"type": "number"}},
                      "required": ["dx", "dy"]}},
+    {"name": "wait", "description": "等待指定秒数(页面加载/动画完成).",
+     "inputSchema": {"type": "object",
+                     "properties": {"seconds": {"type": "number"}},
+                     "required": ["seconds"]}},
+    {"name": "scroll", "description": "移动到(x,y)并滚轮滚动(dy>0上滚, dy<0下滚).",
+     "inputSchema": {"type": "object",
+                     "properties": {"x": {"type": "number"}, "y": {"type": "number"},
+                                    "dy": {"type": "number"}},
+                     "required": ["dy"]}},
     {"name": "type_text", "description": "输入文字(中文自动走剪贴板, 自然节奏).",
      "inputSchema": {"type": "object",
                      "properties": {"text": {"type": "string"}}, "required": ["text"]}},
@@ -116,6 +125,13 @@ def handle_tool_call(name: str, args: dict) -> dict:
             return _text_result("ok")
         if name == "slide":
             svc.slide(args.get("dx", 0), args.get("dy", 0))
+            return _text_result("ok")
+        if name == "wait":
+            svc.wait(args.get("seconds", 1))
+            return _text_result("ok")
+        if name == "scroll":
+            svc.scroll(args.get("x"), args.get("y"),
+                       args.get("dx", 0), args.get("dy", -300))
             return _text_result("ok")
         if name == "type_text":
             svc.type_text(args.get("text", ""))

@@ -93,8 +93,37 @@ class ComputerService:
     def press_key(self, key: str):
         keyboard.tap(key)
 
+    def key_down(self, key: str):
+        keyboard.press(key)
+
+    def key_up(self, key: str):
+        keyboard.release(key)
+
+    def hotkey(self, keys: list):
+        keyboard.combo(keys)
+
     def combo(self, keys: list):
         keyboard.combo(keys)
+
+    # ---------- 高级鼠标 ----------
+    def wait(self, seconds: float):
+        """等待(页面加载/动画完成)"""
+        import time
+        time.sleep(max(0.0, float(seconds)))
+
+    def scroll(self, x: float, y: float, dx: float = 0, dy: float = -300):
+        """移动到(x,y)并滚轮滚动(dy>0上滚, dy<0下滚)"""
+        if x is not None and y is not None:
+            mouse.move_absolute(x, y)
+        mouse.mc.scroll(float(dx), float(dy))
+        log.info("scroll at (%.0f,%.0f) delta=(%.0f,%.0f)", x or 0, y or 0, dx, dy)
+
+    def mouse_down(self, x: float, y: float, button: str = "left"):
+        mouse.move_absolute(x, y)
+        mouse.mc.press(mouse._btn(button))
+
+    def mouse_up(self, x: float, y: float, button: str = "left"):
+        mouse.mc.release(mouse._btn(button))
 
     def type_text(self, text: str):
         tcfg = self.config.get("work", {}).get("typing", {})

@@ -178,6 +178,14 @@ python main.py
 
 密钥解析链: `config.json → 环境变量(DEEPSEEK_API_KEY/TOKENRHYTHM_API_KEY) → DSH 凭据文件(.credentials.yaml)`
 
+### 对齐 codex computer-use 架构的改进
+
+- **批量动作**: 模型一次返回 {"actions":[...]}, 全部执行后再截图反馈(减少API往返5-10倍)
+- **滑动窗口上下文**: 截图只保留最近3轮, 历史动作用文本记录(防上下文爆炸)
+- **细粒度动作**: wait/scroll/mouse_down/key_down/hotkey 等19种动作
+- **解析容错**: 输出无法解析时把错误回传模型修正
+- **坐标直用**: 截图原始分辨率, 模型坐标与真实屏幕一致, 免换算
+
 ### 识图能力检测(强制)
 
 启动任务前自动发送 1x1 测试图:
@@ -187,7 +195,7 @@ python main.py
 ### 执行流程
 
 ```
-任务输入 → 识图检测 → [截图 → 模型决策(JSON动作) → 执行 → 反馈] 循环 → 完成/超步数
+任务输入 → 识图检测 → [截图 → 模型决策(批量动作JSON) → 批量执行 → 截图反馈] 循环 → 完成/超步数
 ```
 
 ### 模型可用动作
@@ -195,7 +203,10 @@ python main.py
 | 动作 | 参数 |
 | --- | --- |
 | click / double_click / right_click | x, y |
-| drag | x1, y1, x2, y2 |
+| drag / mouse_down / mouse_up | 坐标/拖拽/按放 |
+| scroll | x, y, dy (滚轮) |
+| wait | seconds |
+| key_down / key_up / hotkey | key / keys |
 | type_text | text |
 | press_key | key |
 | combo | keys |
