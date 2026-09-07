@@ -33,6 +33,15 @@ libraries — just tool calls.
 - `draw_smooth_path` — 根据控制点用 Catmull-Rom 样条平滑连线
 - `draw_stroke` — 模拟压感笔触（按压力曲线动态控制线宽/不透明度）
 
+
+**新增能力(批量 / 画笔 / 图层 / 橡皮擦 / 变形 / 液化)**
+- `run_paint_actions` — 批量执行多个工具调用(一次完成一组操作)
+- `set_brush` — 扩展支持 种类(`preset`)、颜色(`color`)、力度(`flow` 0~1, 影响透明度)、大小(`size`/`width`)、不透明度(`opacity`), 以及 `layer` 切换到目标图层后绘制
+- `erase` — 橡皮擦: 把图层区域填充为指定颜色(默认白色, 而非透明)
+- `liquify` — 变形画笔: 沿 stroke 圆盘做局部膨胀/收缩几何扭曲
+- `smudge` — 液化/涂抹画笔: 把笔画区域颜色向局部均值混合模糊
+
+
 装好插件并启动 Krita 后，用 `python mcp_server.py --selftest` 验证连通，即可通过这些工具绘图并回看结果。
 
 

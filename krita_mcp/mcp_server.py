@@ -658,14 +658,17 @@ TOOLS = [
          required=["points"]),
 
     tool("set_brush",
-         "Switch the brush. `pattern` sets a texture for the QPainter tools (solid / dashed / dotted). Pass `preset` (a Krita brush preset name, see list_brush_presets) together with `size` / `opacity` to switch the real Krita brush on the active view.",
+         "Switch the brush. pattern (texture: solid/dashed/dotted); color; width; flow (力度/流量 0..1, 影响绘制颜色透明度); preset (Krita 笔刷预设名, 见 list_brush_presets); size (画笔像素); opacity (不透明度 0..1); layer (切换到目标图层, 后续绘制作用到该层).",
          {"pattern": {"type": "string", "default": "solid",
                       "enum": ["solid", "dashed", "dotted"]},
           "color": {"type": ["string", "array"]},
           "width": {"type": "number"},
-          "preset": {"type": "string", "description": "Krita brush preset name; needs an active view."},
-          "size": {"type": "number", "description": "Real brush size in pixels."},
-          "opacity": {"type": "number", "description": "Real brush opacity 0..1."}}),
+          "flow": {"type": "number", "description": "力度/流量 0..1"},
+          "preset": {"type": "string", "description": "Krita brush preset name."},
+          "size": {"type": "number", "description": "brush size in pixels."},
+          "opacity": {"type": "number", "description": "opacity 0..1."},
+          "layer": LAYER_PROP,
+          "document": DOCUMENT_PROP}),
 
     tool("list_brush_presets",
          "List the Krita brush preset names you can pass to set_brush's `preset`.",
@@ -729,7 +732,34 @@ TOOLS = [
           "color": {"type": ["string", "array"]},
           "oversample": {"type": "integer", "default": 4}},
          required=["points"]),
-]
+    tool("erase",
+         "橡皮擦: 把目标图层矩形区域填充为指定颜色(默认白色, 而非透明). x,y 左上角, w/width, h/height 尺寸, color 填充色.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "x": {"type": "number", "default": 0}, "y": {"type": "number", "default": 0},
+          "w": {"type": "number"}, "width": {"type": "number"},
+          "h": {"type": "number"}, "height": {"type": "number"},
+          "color": {"type": ["string", "array"]}},
+         required=["w", "h"]),
+
+    tool("liquify",
+         "变形画笔: 沿 stroke=[[cx,cy,radius,strength],...] 逐盘做局部几何扭曲 (strength>1 膨胀, <1 收缩). 适合做局部变形/推挤效果.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "stroke": {"type": "array", "items": {"type": "array"},
+                     "description": "array of [cx, cy, radius, strength]"}},
+         required=["stroke"]),
+
+    tool("smudge",
+         "液化/涂抹画笔: 把 stroke=[[cx,cy,radius,strength],...] 区域的像素颜色向局部均值混合模糊 (用户定义: 混合/模糊范围内颜色). strength 0~1 混合强度.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "stroke": {"type": "array", "items": {"type": "array"},
+                     "description": "array of [cx, cy, radius, strength]"}},
+         required=["stroke"]),
+
+    tool("run_paint_actions",
+         "批量执行多个绘画工具调用, 一次完成一组操作. actions 为数组, 每个元素 {tool: 工具名, arguments: {参数}}. 逐个执行并汇总每个结果.",
+         {"actions": {"type": "array", "items": {"type": "object"},
+                      "description": "[{tool: \"draw_line\", arguments: {...}}, ...]"}},
+         required=["actions"]),]
 
 TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
 
@@ -747,6 +777,17 @@ def _summarise(result):
 
 
 def call_tool(name, arguments):
+    if name == "run_paint_actions":
+        actions = (arguments or {}).get("actions") or []
+        merged = []
+        for a in actions:
+            t = a.get("tool"); aa = a.get("arguments", {})
+            try:
+                content = call_tool(t, aa)
+                merged.append({"tool": t, "ok": True, "content": content})
+            except BridgeError as exc:
+                merged.append({"tool": t, "ok": False, "error": str(exc)})
+        return [{"type": "text", "text": _summarise(merged)}]
     spec = TOOLS_BY_NAME.get(name)
     if spec is None:
         raise BridgeError("unknown_tool",

@@ -1,4 +1,4 @@
-﻿"""The operations the MCP server can invoke.
+"""The operations the MCP server can invoke.
 
 Everything in here runs on Krita's GUI thread (see mainthread.py), so it may
 touch libkis freely, but it must never block for long: the HTTP worker is
@@ -1560,8 +1560,12 @@ def _finish_region_paint(doc, node, painter, region, canvas):
     _refresh(doc)
 
 
-def _brush_pen(color, width):
-    pen = QPen(parse_color(color or "#000000"))
+def _brush_pen(color, width, flow=None):
+    col = parse_color(color or "#000000")
+    f = _BRUSH_TEXTURE.get("flow") if flow is None else flow
+    if f is not None:
+        col.setAlphaF(max(0.0, min(1.0, float(f))) * col.alphaF())
+    pen = QPen(col)
     pen.setWidthF(max(0.25, float(width)))
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
@@ -1575,23 +1579,28 @@ def _brush_pen(color, width):
 
 @op("set_brush", timeout=20.0, mutates=False)
 def op_set_brush(params):
-    """切换画笔. pattern 控制纹理(solid/dashed/dotted, 影响 QPainter 绘制);
-    传 preset 则用 Krita 真实笔刷预设(view.setCurrentBrushPreset), 可用 size / opacity 一并设置."""
+    """切换画笔. pattern 纹理(solid/dashed/dotted);
+    preset 用 Krita 真实笔刷预设; size 大小; opacity 不透明度;
+    flow 力度/流量(0~1); color 颜色; layer 切换到目标图层后绘制."""
     pattern = str(_arg(params, "pattern", "solid")).strip().lower()
     if pattern not in VALID_PATTERNS:
         raise OpError("pattern must be one of: " + ", ".join(VALID_PATTERNS))
     _BRUSH_TEXTURE["pattern"] = pattern
-    if "color" in params:
-        _BRUSH_TEXTURE["color"] = str(_arg(params, "color"))
-    if "width" in params:
-        _BRUSH_TEXTURE["width"] = float(_arg(params, "width"))
+    for k in ("color", "preset"):
+        if params.get(k) is not None:
+            _BRUSH_TEXTURE[k] = str(params[k])
+    for k in ("width", "size", "opacity", "flow"):
+        if params.get(k) is not None:
+            _BRUSH_TEXTURE[k] = float(params[k])
 
     applied_preset = None
     preset = _arg(params, "preset")
     if preset is not None and not isinstance(preset, str):
         raise OpError("preset must be a brush preset name (string)")
 
-    if preset is not None or params.get("size") is not None or params.get("opacity") is not None:
+    needs_view = (preset is not None or params.get("size") is not None
+                  or params.get("opacity") is not None or params.get("flow") is not None)
+    if needs_view:
         try:
             from krita import Krita
             view = Krita.instance().activeWindow().activeView()
@@ -1605,19 +1614,26 @@ def op_set_brush(params):
                     names = sorted(presets.keys())
                     raise OpError("preset {0!r} not found. Available: {1}".format(preset, ", ".join(names[:40]) or "(none)"), kind="not_found")
                 view.setCurrentBrushPreset(presets[preset])
-                _BRUSH_TEXTURE["preset"] = preset
                 applied_preset = preset
             if params.get("size") is not None:
-                sz = float(params["size"])
-                view.setBrushSize(sz)
-                _BRUSH_TEXTURE["size"] = sz
+                view.setBrushSize(float(params["size"]))
             if params.get("opacity") is not None:
-                op = max(0.0, min(1.0, float(params["opacity"])))
-                view.setPaintingOpacity(op)
-                _BRUSH_TEXTURE["opacity"] = op
+                view.setPaintingOpacity(max(0.0, min(1.0, float(params["opacity"]))))
+            if params.get("flow") is not None:
+                try:
+                    view.setPaintingFlow(max(0.0, min(1.0, float(params["flow"]))))
+                except Exception:
+                    pass
         except Exception as exc:
             return {"ok": False, "brush": dict(_BRUSH_TEXTURE),
                     "preset_error": str(exc), "preset_applied": applied_preset}
+
+    # 图层切换: 后续绘制作用到该层
+    if params.get("layer") is not None:
+        doc = resolve_document(params.get("document"))
+        node = resolve_node(doc, params["layer"])
+        doc.setActiveNode(node)
+        _BRUSH_TEXTURE["layer"] = str(node.name())
     return {"ok": True, "brush": dict(_BRUSH_TEXTURE),
             "preset_applied": applied_preset}
 
@@ -1800,6 +1816,140 @@ def op_draw_stroke(params):
     imaging.write_node_image(node, region, canvas.convertToFormat(QImage.Format_ARGB32))
     _refresh(doc)
     return {"drawn": True, "samples": len(samples), "points": len(pts)}
+
+
+
+def _paint_region(doc, node, bbox):
+    """读取节点区域并返回 (region, image) 供像素级处理, 不启动 painter."""
+    doc_rect = QRect(0, 0, doc.width(), doc.height())
+    region = bbox.intersected(doc_rect)
+    if region.width() <= 0 or region.height() <= 0:
+        raise OpError("Region lies outside the %dx%d canvas." % (doc.width(), doc.height()))
+    img = imaging.read_node_image(node, region).convertToFormat(QImage.Format_ARGB32)
+    return region, img
+
+def _commit_region(doc, node, region, img):
+    imaging.write_node_image(node, region, img.convertToFormat(QImage.Format_ARGB32))
+    _refresh(doc)
+
+def _rgb_color(pixel):
+    return QColor(pixel)
+
+@op("erase", timeout=60.0, mutates=True)
+def op_erase(params):
+    """橡皮擦: 把目标图层指定区域填充为所选颜色(默认白色, 而非透明)."""
+    doc = resolve_document(params.get("document"))
+    node = _require_paint_node(doc, params.get("layer"))
+    color = parse_color(_arg(params, "color", _BRUSH_TEXTURE.get("color", "#ffffff")), "#ffffff")
+    x = max(0, int(round(_as_float(_arg(params, "x", 0), "x"))))
+    y = max(0, int(round(_as_float(_arg(params, "y", 0), "y"))))
+    w = max(1, int(round(_as_float(_arg(params, "w", _arg(params, "width", 1)), "w"))))
+    h = max(1, int(round(_as_float(_arg(params, "h", _arg(params, "height", 1)), "h"))))
+    region, img = _paint_region(doc, node, QRect(x, y, w, h))
+    p = QPainter()
+    p.begin(img)
+    p.setCompositionMode(QPainter.CompositionMode_Source)
+    p.fillRect(QRect(0, 0, img.width(), img.height()), color)
+    p.end()
+    _commit_region(doc, node, region, img)
+    return {"erased": True, "region": {"x": region.x(), "y": region.y(),
+            "width": region.width(), "height": region.height()}, "color": color.name()}
+@op("liquify", timeout=120.0, mutates=True)
+def op_liquify(params):
+    """变形笔刷(液化扭曲): 沿 stroke 圆盘逐点做膨胀(strength>1)/收缩(strength<1)变形. stroke 为 [[cx,cy,radius,strength],...].应急用. 源为当前图层区域."""
+    import math
+    doc = resolve_document(params.get("document"))
+    node = _require_paint_node(doc, params.get("layer"))
+    raw = params.get("stroke") or params.get("points")
+    if not isinstance(raw, (list, tuple)) or len(raw) < 1:
+        raise OpError("stroke must be an array of [cx,cy,radius,strength]")
+    disks = []
+    for d in raw:
+        if not isinstance(d, (list, tuple)) or len(d) < 3:
+            raise OpError("each stroke entry must be [cx,cy,radius,strength]")
+        disks.append((float(d[0]), float(d[1]), max(1.0, float(d[2])), float(d[3]) if len(d) > 3 else 1.8))
+    xs = [c - r for (c, cy, r, s) in disks]; ys = [cy - r for (c, cy, r, s) in disks]
+    xe = [c + r for (c, cy, r, s) in disks]; ye = [cy + r for (c, cy, r, s) in disks]
+    bbox = QRect(max(0, int(min(xs) - 2)), max(0, int(min(ys) - 2)),
+                 max(1, int(max(xe) - min(xs) + 4)), max(1, int(max(ye) - min(ys) + 4)))
+    region, src = _paint_region(doc, node, bbox)
+    ox, oy = region.x(), region.y()
+    w, h = src.width(), src.height()
+    out = QImage(w, h, QImage.Format_ARGB32)
+    for yy in range(h):
+        for xx in range(w):
+            gx, gy = xx + ox, yy + oy
+            sx, sy = gx, gy
+            for (cx, cy, r, s) in disks:
+                dx, dy = sx - cx, sy - cy
+                d = math.hypot(dx, dy)
+                if 0 < d < r:
+                    t = d / r
+                    sc = t * (1.0 / max(0.05, s)) + (1.0 - t)
+                    sx, sy = cx + dx * sc, cy + dy * sc
+            pxi = int(sx - ox); pyi = int(sy - oy)
+            pxi = max(0, min(w - 1, pxi)); pyi = max(0, min(h - 1, pyi))
+            out.setPixel(xx, yy, src.pixel(pxi, pyi))
+    _commit_region(doc, node, region, out)
+    return {"deformed": len(disks), "region": {"x": region.x(), "y": region.y(),
+            "width": region.width(), "height": region.height()}}
+
+@op("smudge", timeout=120.0, mutates=True)
+def op_smudge(params):
+    """液化/涂抹画笔: 把笔画经过区域的颜色向局部均值混合模糊(用户定义: 混合/模糊范围内颜色). stroke 为 [[cx,cy,radius,strength],...]."""
+    import math
+    doc = resolve_document(params.get("document"))
+    node = _require_paint_node(doc, params.get("layer"))
+    raw = params.get("stroke") or params.get("points")
+    if not isinstance(raw, (list, tuple)) or len(raw) < 1:
+        raise OpError("stroke must be an array of [cx,cy,radius,strength]")
+    disks = []
+    for d in raw:
+        if not isinstance(d, (list, tuple)) or len(d) < 2:
+            raise OpError("each stroke entry must be [cx,cy,radius,strength]")
+        disks.append((float(d[0]), float(d[1]), max(1.0, float(d[2])), float(d[3]) if len(d) > 3 else 0.6))
+    xs = [c - r for (c, cy, r, s) in disks]; ys = [cy - r for (c, cy, r, s) in disks]
+    xe = [c + r for (c, cy, r, s) in disks]; ye = [cy + r for (c, cy, r, s) in disks]
+    bbox = QRect(max(0, int(min(xs) - 2)), max(0, int(min(ys) - 2)),
+                 max(1, int(max(xe) - min(xs) + 4)), max(1, int(max(ye) - min(ys) + 4)))
+    region, img = _paint_region(doc, node, bbox)
+    ox, oy = region.x(), region.y()
+    w, h = img.width(), img.height()
+    # 预取像素为列表, 加速均值计算
+    px = [[_rgb_color(img.pixel(x, y)) for x in range(w)] for y in range(h)]
+    def lerp(a, b, t): return a + (b - a) * t
+    for (cx, cy, r, s) in disks:
+        x0 = max(0, int(cx - ox - r)); x1 = min(w - 1, int(cx - ox + r))
+        y0 = max(0, int(cy - oy - r)); y1 = min(h - 1, int(cy - oy + r))
+        for yy in range(y0, y1 + 1):
+            for xx in range(x0, x1 + 1):
+                gx, gy = xx + ox, yy + oy
+                d = math.hypot(gx - cx, gy - cy)
+                if d > r:
+                    continue
+                # 半径内均值
+                rr = max(1, int(r * 0.6))
+                sx0 = max(0, xx - rr); sx1 = min(w - 1, xx + rr)
+                sy0 = max(0, yy - rr); sy1 = min(h - 1, yy + rr)
+                acc_r = acc_g = acc_b = acc_a = 0; cnt = 0
+                for sy_ in range(sy0, sy1 + 1):
+                    row = px[sy_]
+                    for sx_ in range(sx0, sx1 + 1):
+                        c = row[sx_]
+                        acc_r += c.red(); acc_g += c.green(); acc_b += c.blue(); acc_a += c.alpha()
+                        cnt += 1
+                if cnt == 0:
+                    continue
+                avg_r = acc_r / cnt; avg_g = acc_g / cnt; avg_b = acc_b / cnt; avg_a = acc_a / cnt
+                cur = px[yy][xx]
+                base = 1.0 - s
+                nr = int(lerp(cur.red(), avg_r, s)); ng = int(lerp(cur.green(), avg_g, s))
+                nb = int(lerp(cur.blue(), avg_b, s)); na = int(lerp(cur.alpha(), avg_a, s))
+                img.setPixel(xx, yy, QColor(nr, ng, nb, max(0, min(255, na))).rgba())
+                px[yy][xx] = _rgb_color(img.pixel(xx, yy))
+    _commit_region(doc, node, region, img)
+    return {"smudged": len(disks), "region": {"x": region.x(), "y": region.y(),
+            "width": region.width(), "height": region.height()}}
 
 
 # --------------------------------------------------------------------------
