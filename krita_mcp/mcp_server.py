@@ -366,15 +366,26 @@ def _draw_rect(args):
     args["commands"] = [{
         "type": "rect",
         "x": args.pop("x", 0), "y": args.pop("y", 0),
-        "w": args.pop("w", args.pop("width", 0)),
-        "h": args.pop("h", args.pop("height", 0)),
+        "w": (args.pop("w") if "w" in args else args.pop("width", 0)),
+        "h": (args.pop("h") if "h" in args else args.pop("height", 0)),
         "color": args.pop("color", None),
         "fill": args.pop("fill", None),
-        "stroke_width": args.pop("width", 1.0),
+        "stroke_width": args.pop("stroke_width", 1.0),
     }]
     return "draw", args
 
 
+def _draw_ellipse(args):
+    args["commands"] = [{
+        "type": "ellipse",
+        "x": args.pop("x", 0), "y": args.pop("y", 0),
+        "w": (args.pop("w") if "w" in args else args.pop("width", 0)),
+        "h": (args.pop("h") if "h" in args else args.pop("height", 0)),
+        "color": args.pop("color", None),
+        "fill": args.pop("fill", None),
+        "stroke_width": args.pop("stroke_width", 1.0),
+    }]
+    return "draw", args
 def _draw_ellipse(args):
     args["commands"] = [{
         "type": "ellipse",
@@ -670,27 +681,26 @@ TOOLS = [
          required=["x1", "y1", "x2", "y2"], transform=_draw_line),
 
     tool("draw_rect",
-         "Draw a rectangle. x,y top-left; w/width, h/height size. color outlines, fill fills.",
+         "Draw a rectangle. x,y top-left. size: w or width, h or height. color outlines, fill fills, stroke_width outline thickness.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "x": {"type": "number"}, "y": {"type": "number"},
           "w": {"type": "number"}, "width": {"type": "number"},
           "h": {"type": "number"}, "height": {"type": "number"},
           "color": {"type": ["string", "array"]},
           "fill": {"type": ["string", "array"]},
-          "width": {"type": "number", "default": 1.0}},
+          "stroke_width": {"type": "number", "default": 1.0}},
          required=["x", "y"], transform=_draw_rect),
 
     tool("draw_ellipse",
-         "Draw an ellipse inscribed in box x,y,w,h.",
+         "Draw an ellipse inscribed in box x,y,w,h. size: w or width, h or height. stroke_width outline thickness.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "x": {"type": "number"}, "y": {"type": "number"},
           "w": {"type": "number"}, "width": {"type": "number"},
           "h": {"type": "number"}, "height": {"type": "number"},
           "color": {"type": ["string", "array"]},
           "fill": {"type": ["string", "array"]},
-          "width": {"type": "number", "default": 1.0}},
+          "stroke_width": {"type": "number", "default": 1.0}},
          required=["x", "y"], transform=_draw_ellipse),
-
     tool("draw_polygon",
          "Draw a polygon. points is [[x,y],...]. fill fills, color outlines.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
