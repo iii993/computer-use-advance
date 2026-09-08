@@ -1884,11 +1884,11 @@ def op_draw_stroke(params):
             path.lineTo(qp)
         path.closeSubpath()
         painter.drawPath(path)
-        # 首尾圆帽: 圆滑两端
-        painter.drawEllipse(QPointF(samples[0][0], samples[0][1]),
-                            max(0.25, samples[0][2] / 2.0), max(0.25, samples[0][2] / 2.0))
-        painter.drawEllipse(QPointF(samples[-1][0], samples[-1][1]),
-                            max(0.25, samples[-1][2] / 2.0), max(0.25, samples[-1][2] / 2.0))
+        # 所有采样点补同色圆(round join/cap): 填平折角处包络自交留下的空隙,
+        # 并圆滑两端; 与路径同色不透明, 不会产生颜色差异或节状感
+        for (sx_, sy_, sw_) in samples:
+            painter.drawEllipse(QPointF(sx_, sy_),
+                                max(0.25, sw_ / 2.0), max(0.25, sw_ / 2.0))
     finally:
         painter.end()
     imaging.write_node_image(node, region, canvas.convertToFormat(QImage.Format_ARGB32))
@@ -1896,45 +1896,66 @@ def op_draw_stroke(params):
     return {"drawn": True, "samples": len(samples), "points": len(pts)}
 
 
-@op("draw_pressure_curve", timeout=60.0, mutates=True)
+@op("draw_pressure_curve", timeout=120.0, mutates=True)
 def op_draw_pressure_curve(params):
     """压感曲线笔刷封装: 只需传少量控制点, 自动生成平滑曲线+轻重压感.
-    points 为 [[x,y],...] 控制点(无需中间点); width 最粗; min_width 最细;
-    color 颜色; smooth=True 用 Catmull-Rom 平滑, False 直线折角;
-    pressure_curve 可选 'bell'(轻轻重) / 'flat'(均匀)."""
-    raw = params.get("points")
-    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
-        raise OpError("points must be an array of at least 2 [x,y] points")
-    # 默认压力曲线: 起笔轻 -> 中段重 -> 收笔轻 (钟形)
-    curve = str(_arg(params, "pressure_curve", "bell")).lower()
-    n = len(raw)
-    pressures = []
-    for i in range(n):
-        f = i / float(max(1, n - 1))
-        if curve == "flat":
-            pressures.append(1.0)
-        else:  # bell: 轻轻重
-            if f <= 0.5:
-                pressures.append(0.2 + 0.8 * (f * 2.0))
+    单条: points=[[x,y],...] + width/min_width/color/smooth/pressure_curve/opacity.
+    批量: strokes=[{points, width, color, ...}, ...] 一次画多条(共享 document/layer)."""
+    def _build(points, opts):
+        if not isinstance(points, (list, tuple)) or len(points) < 2:
+            raise OpError("points must be an array of at least 2 [x,y] points")
+        curve = str(opts.get("pressure_curve", "bell")).lower()
+        n = len(points)
+        pressures = []
+        for i in range(n):
+            f = i / float(max(1, n - 1))
+            if curve == "flat":
+                pressures.append(1.0)
             else:
-                pressures.append(1.0 - 0.8 * ((f - 0.5) * 2.0))
-    # 组装成 draw_stroke 的参数并复用其实现(含平滑细分/宽度平滑/单路径填充)
-    stroke_params = {
-        "points": raw,
-        "pressures": pressures,
-        "base_width": _arg(params, "width", 24.0),
-        "min_width": _arg(params, "min_width", 1.0),
-        "color": _arg(params, "color", "#000000"),
-        "oversample": _arg(params, "oversample", 16),
-        "smooth": _as_bool(_arg(params, "smooth", True), "smooth"),
-        "opacity": _arg(params, "opacity", 1.0),
-    }
-    if params.get("document") is not None:
-        stroke_params["document"] = params["document"]
-    if params.get("layer") is not None:
-        stroke_params["layer"] = params["layer"]
-    return op_draw_stroke(stroke_params)
+                if f <= 0.5:
+                    pressures.append(0.2 + 0.8 * (f * 2.0))
+                else:
+                    pressures.append(1.0 - 0.8 * ((f - 0.5) * 2.0))
+        sp = {
+            "points": points,
+            "pressures": pressures,
+            "base_width": opts.get("width", 24.0),
+            "min_width": opts.get("min_width", 1.0),
+            "color": opts.get("color", "#000000"),
+            "oversample": opts.get("oversample", 16),
+            "smooth": _as_bool(opts.get("smooth", True), "smooth"),
+            "opacity": opts.get("opacity", 1.0),
+        }
+        return sp
 
+    strokes = params.get("strokes")
+    if strokes is not None:
+        if not isinstance(strokes, (list, tuple)) or not strokes:
+            raise OpError("strokes must be a non-empty array of stroke objects")
+        results = []
+        for idx, st_ in enumerate(strokes):
+            if not isinstance(st_, dict) or not st_.get("points"):
+                raise OpError("strokes[{0}] must be an object with points".format(idx))
+            merged = dict(params)
+            merged.pop("strokes", None)
+            merged.update(st_)
+            sp = _build(st_["points"], merged)
+            if params.get("document") is not None:
+                sp["document"] = params["document"]
+            if params.get("layer") is not None:
+                sp["layer"] = params["layer"]
+            out = op_draw_stroke(sp)
+            results.append({"index": idx, "drawn": True,
+                            "samples": out.get("samples"), "points": len(st_["points"])})
+        return {"ok": True, "count": len(strokes), "results": results}
+
+    raw = params.get("points")
+    sp = _build(raw, params)
+    if params.get("document") is not None:
+        sp["document"] = params["document"]
+    if params.get("layer") is not None:
+        sp["layer"] = params["layer"]
+    return op_draw_stroke(sp)
 
 
 def _paint_region(doc, node, bbox):
