@@ -1896,6 +1896,46 @@ def op_draw_stroke(params):
     return {"drawn": True, "samples": len(samples), "points": len(pts)}
 
 
+@op("draw_pressure_curve", timeout=60.0, mutates=True)
+def op_draw_pressure_curve(params):
+    """压感曲线笔刷封装: 只需传少量控制点, 自动生成平滑曲线+轻重压感.
+    points 为 [[x,y],...] 控制点(无需中间点); width 最粗; min_width 最细;
+    color 颜色; smooth=True 用 Catmull-Rom 平滑, False 直线折角;
+    pressure_curve 可选 'bell'(轻轻重) / 'flat'(均匀)."""
+    raw = params.get("points")
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        raise OpError("points must be an array of at least 2 [x,y] points")
+    # 默认压力曲线: 起笔轻 -> 中段重 -> 收笔轻 (钟形)
+    curve = str(_arg(params, "pressure_curve", "bell")).lower()
+    n = len(raw)
+    pressures = []
+    for i in range(n):
+        f = i / float(max(1, n - 1))
+        if curve == "flat":
+            pressures.append(1.0)
+        else:  # bell: 轻轻重
+            if f <= 0.5:
+                pressures.append(0.2 + 0.8 * (f * 2.0))
+            else:
+                pressures.append(1.0 - 0.8 * ((f - 0.5) * 2.0))
+    # 组装成 draw_stroke 的参数并复用其实现(含平滑细分/宽度平滑/单路径填充)
+    stroke_params = {
+        "points": raw,
+        "pressures": pressures,
+        "base_width": _arg(params, "width", 24.0),
+        "min_width": _arg(params, "min_width", 1.0),
+        "color": _arg(params, "color", "#000000"),
+        "oversample": _arg(params, "oversample", 16),
+        "smooth": _as_bool(_arg(params, "smooth", True), "smooth"),
+        "opacity": _arg(params, "opacity", 1.0),
+    }
+    if params.get("document") is not None:
+        stroke_params["document"] = params["document"]
+    if params.get("layer") is not None:
+        stroke_params["layer"] = params["layer"]
+    return op_draw_stroke(stroke_params)
+
+
 
 def _paint_region(doc, node, bbox):
     """读取节点区域并返回 (region, image) 供像素级处理, 不启动 painter."""
