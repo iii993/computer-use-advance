@@ -42,6 +42,12 @@ libraries — just tool calls.
 - `smudge` — 液化/涂抹画笔: 把笔画区域颜色向局部均值混合模糊
 
 
+
+**曲线与压感(实现要点)**
+- `draw_smooth_path` — 用 **Catmull-Rom 三次样条**对控制点插值: 对每 4 个相邻点, 中间段在 t=0 过 P1、t=1 过 P2, 逐段拼接即得一条**每个点都穿过**的光滑曲线; 再细分采样成折线一次描边。
+- `draw_stroke` — 压力映射为**线宽 + 不透明度**: 线宽 = min_width + (base_width − min_width)·p, 不透明度 = 0.30 + 0.70·p, 沿折线采一圈圈实心圆重叠成渐变笔触; 检测到 Krita 6.0 的 `node.paintLine` 时改走真实画笔+真实压力。
+- **三维点 [x, y, 压力]**: 当前接口压力走独立 `pressures` 数组; 可升级为每点自带压力 `[[x,y,p],...]`, 在参数解析处做维度解包即可兼容两种输入(详情见 `docs/功能详解-README.md` §4.3)。
+
 装好插件并启动 Krita 后，用 `python mcp_server.py --selftest` 验证连通，即可通过这些工具绘图并回看结果。
 
 
