@@ -1870,14 +1870,20 @@ def op_draw_stroke(params):
                 normals.append((0.0, -1.0))
             else:
                 normals.append((-dy / L, dx / L))
-        # 上下包络点(相邻四边形共享这些点 -> 无缝且平滑)
+        # 上下包络点
         up = [QPointF(s[0] + nx * (s[2] / 2.0), s[1] + ny * (s[2] / 2.0))
               for s, (nx, ny) in zip(samples, normals)]
         low = [QPointF(s[0] - nx * (s[2] / 2.0), s[1] - ny * (s[2] / 2.0))
                for s, (nx, ny) in zip(samples, normals)]
-        for i in range(n - 1):
-            poly = QPolygonF([up[i], up[i + 1], low[i + 1], low[i]])
-            painter.drawPolygon(poly)
+        # 关键: 上包络正向连、下包络反向连成一条闭合路径, 一次填充 -> 没有多边形接缝/白线
+        path = QPainterPath()
+        path.moveTo(up[0])
+        for qp in up[1:]:
+            path.lineTo(qp)
+        for qp in reversed(low):
+            path.lineTo(qp)
+        path.closeSubpath()
+        painter.drawPath(path)
         # 首尾圆帽: 圆滑两端
         painter.drawEllipse(QPointF(samples[0][0], samples[0][1]),
                             max(0.25, samples[0][2] / 2.0), max(0.25, samples[0][2] / 2.0))
