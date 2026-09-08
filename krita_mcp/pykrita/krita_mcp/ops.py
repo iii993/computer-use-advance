@@ -1898,26 +1898,41 @@ def op_draw_stroke(params):
 
 @op("draw_pressure_curve", timeout=120.0, mutates=True)
 def op_draw_pressure_curve(params):
-    """压感曲线笔刷封装: 只需传少量控制点, 自动生成平滑曲线+轻重压感.
-    单条: points=[[x,y],...] + width/min_width/color/smooth/pressure_curve/opacity.
-    批量: strokes=[{points, width, color, ...}, ...] 一次画多条(共享 document/layer)."""
+    """压感曲线笔刷封装: points 支持 [x,y] 或 [x,y,压力], 压力取 0~100, 不填默认 100(满压).
+    传了压力就用显式压力; 全不传压力时按 pressure_curve 生成(flat=均匀满压默认 / bell=轻轻重).
+    单条: points=[[x,y,(p)],...] + width/min_width/color/smooth/opacity.
+    批量: strokes=[{points, width, color, ...}, ...] 一次画多条."""
     def _build(points, opts):
         if not isinstance(points, (list, tuple)) or len(points) < 2:
-            raise OpError("points must be an array of at least 2 [x,y] points")
-        curve = str(opts.get("pressure_curve", "bell")).lower()
-        n = len(points)
+            raise OpError("points must be an array of at least 2 points, each [x,y] or [x,y,pressure]")
+        pts = []
         pressures = []
-        for i in range(n):
-            f = i / float(max(1, n - 1))
-            if curve == "flat":
-                pressures.append(1.0)
+        has_explicit = False
+        for it in points:
+            if not isinstance(it, (list, tuple)) or len(it) < 2:
+                raise OpError("each point must be [x,y] or [x,y,pressure]")
+            pts.append((float(it[0]), float(it[1])))
+            if len(it) >= 3 and it[2] is not None:
+                has_explicit = True
+                pressures.append(max(0.0, min(100.0, float(it[2]))) / 100.0)
             else:
-                if f <= 0.5:
-                    pressures.append(0.2 + 0.8 * (f * 2.0))
-                else:
-                    pressures.append(1.0 - 0.8 * ((f - 0.5) * 2.0))
+                pressures.append(100.0 / 100.0)
+        if not has_explicit:
+            # 无显式压力: 用压力曲线生成(默认 flat = 均匀满压 100)
+            curve = str(opts.get("pressure_curve", "flat")).lower()
+            n = len(pts)
+            pressures = []
+            for i in range(n):
+                f = i / float(max(1, n - 1))
+                if curve == "flat":
+                    pressures.append(1.0)
+                else:  # bell: 轻轻重
+                    if f <= 0.5:
+                        pressures.append(0.2 + 0.8 * (f * 2.0))
+                    else:
+                        pressures.append(1.0 - 0.8 * ((f - 0.5) * 2.0))
         sp = {
-            "points": points,
+            "points": pts,
             "pressures": pressures,
             "base_width": opts.get("width", 24.0),
             "min_width": opts.get("min_width", 1.0),
