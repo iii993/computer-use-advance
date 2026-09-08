@@ -1783,34 +1783,106 @@ def op_draw_stroke(params):
     base_width = max(0.5, _as_float(_arg(params, "base_width", 24.0), "base_width"))
     min_width = max(0.25, _as_float(_arg(params, "min_width", 1.0), "min_width"))
     color = parse_color(_arg(params, "color", "#000000"))
-    oversample = max(1, min(32, _as_int(_arg(params, "oversample", 4), "oversample")))
+    oversample = max(1, min(64, _as_int(_arg(params, "oversample", 16), "oversample")))
+    # smooth=True: 控制点先用 Catmull-Rom 细分出平滑曲线(压力也一起插值); False=逐点直线
+    smooth = _as_bool(_arg(params, "smooth", True), "smooth")
     def interp(a, b, t):
         return a + (b - a) * t
+    def _catmull(qa, qb, qc, qd, t):
+        t2 = t * t; t3 = t2 * t
+        return (
+            0.5 * (2 * qb[0] + (-qa[0] + qc[0]) * t
+                   + (2 * qa[0] - 5 * qb[0] + 4 * qc[0] - qd[0]) * t2
+                   + (-qa[0] + 3 * qb[0] - 3 * qc[0] + qd[0]) * t3),
+            0.5 * (2 * qb[1] + (-qa[1] + qc[1]) * t
+                   + (2 * qa[1] - 5 * qb[1] + 4 * qc[1] - qd[1]) * t2
+                   + (-qa[1] + 3 * qb[1] - 3 * qc[1] + qd[1]) * t3))
+    # 生成 (x, y, 宽度) 采样点序列
+    sx, sw = [], []
+    if smooth and len(pts) >= 3:
+        for i in range(len(pts) - 1):
+            qa = pts[i - 1] if i > 0 else pts[i]
+            qb = pts[i]; qc = pts[i + 1]
+            qd = pts[i + 2] if i + 2 < len(pts) else pts[i + 1]
+            pa = pressures[i - 1] if i > 0 else pressures[i]
+            pb = pressures[i]; pc = pressures[i + 1]
+            pd = pressures[i + 2] if i + 2 < len(pressures) else pressures[i + 1]
+            for k in range(oversample + 1):
+                t = k / float(oversample)
+                x, y = _catmull(qa, qb, qc, qd, t)
+                p = 0.5 * (2 * pb + (-pa + pc) * t
+                           + (2 * pa - 5 * pb + 4 * pc - pd) * t * t
+                           + (-pa + 3 * pb - 3 * pc + pd) * t * t * t)
+                sx.append((x, y))
+                sw.append(max(0.0, min(1.0, p)))
+    else:
+        for i in range(len(pts) - 1):
+            for k in range(oversample + 1):
+                t = k / float(oversample)
+                sx.append((interp(pts[i][0], pts[i + 1][0], t),
+                           interp(pts[i][1], pts[i + 1][1], t)))
+                sw.append(interp(pressures[i], pressures[i + 1], t))
+    # 宽度平滑: 对压力做滑动平均, 避免粗细突变产生节节感
+    def _smooth(vals, win):
+        n = len(vals)
+        if n < 3 or win < 2:
+            return vals
+        out = list(vals)
+        h = win // 2
+        for i in range(n):
+            lo, hi = max(0, i - h), min(n, i + h + 1)
+            out[i] = sum(vals[lo:hi]) / float(hi - lo)
+        return out
+    sw2 = _smooth(sw, 7)
     samples = []
-    for i in range(len(pts) - 1):
-        (x0, y0), (x1, y1) = pts[i], pts[i + 1]
-        w0 = min_width + (base_width - min_width) * pressures[i]
-        w1 = min_width + (base_width - min_width) * pressures[i + 1]
-        a0 = 0.30 + 0.70 * pressures[i]
-        a1 = 0.30 + 0.70 * pressures[i + 1]
-        for k in range(oversample + 1):
-            t = k / float(oversample)
-            samples.append((interp(x0, x1, t), interp(y0, y1, t),
-                            interp(w0, w1, t), interp(a0, a1, t)))
-    xs = [s[0] for s in samples]
-    ys = [s[1] for s in samples]
+    for (x, y), p in zip(sx, sw2):
+        w = min_width + (base_width - min_width) * p
+        samples.append((x, y, w))
+    xs = [s[0] for s in samples]; ys = [s[1] for s in samples]
     half = max(max(s[2] for s in samples) / 2.0, 2.0)
     bbox = QRect(max(0, int(min(xs) - half - 2)), max(0, int(min(ys) - half - 2)),
                  max(1, int(max(xs) - min(xs) + 2 * half + 4)),
                  max(1, int(max(ys) - min(ys) + 2 * half + 4)))
     painter, region, canvas = _begin_region_paint(doc, node, bbox)
     try:
-        for (x, y, w, a) in samples:
-            col = QColor(color.red(), color.green(), color.blue(),
-                         int(round(a * 255)))
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(col))
-            painter.drawEllipse(QPointF(x, y), max(0.25, w / 2.0), max(0.25, w / 2.0))
+        import math
+        # 统一填充色: 压感只改变粗细, 颜色恒定一致(不透明), 由 opacity 整体控制透明度
+        base_op = max(0.0, min(1.0, _as_float(_arg(params, "opacity", 1.0), "opacity")))
+        fill = QColor(color.red(), color.green(), color.blue(), int(round(base_op * 255)))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(fill))
+        n = len(samples)
+        # 每点法线: 中间点取前后两点连线方向(平均法线), 使包络点随曲线平滑转向
+        normals = []
+        for i in range(n):
+            if n == 1:
+                normals.append((0.0, -1.0))
+                continue
+            if i == 0:
+                dx, dy = samples[1][0] - samples[0][0], samples[1][1] - samples[0][1]
+            elif i == n - 1:
+                dx, dy = samples[i][0] - samples[i - 1][0], samples[i][1] - samples[i - 1][1]
+            else:
+                dx = samples[i + 1][0] - samples[i - 1][0]
+                dy = samples[i + 1][1] - samples[i - 1][1]
+            L = math.hypot(dx, dy)
+            if L < 1e-9:
+                normals.append((0.0, -1.0))
+            else:
+                normals.append((-dy / L, dx / L))
+        # 上下包络点(相邻四边形共享这些点 -> 无缝且平滑)
+        up = [QPointF(s[0] + nx * (s[2] / 2.0), s[1] + ny * (s[2] / 2.0))
+              for s, (nx, ny) in zip(samples, normals)]
+        low = [QPointF(s[0] - nx * (s[2] / 2.0), s[1] - ny * (s[2] / 2.0))
+               for s, (nx, ny) in zip(samples, normals)]
+        for i in range(n - 1):
+            poly = QPolygonF([up[i], up[i + 1], low[i + 1], low[i]])
+            painter.drawPolygon(poly)
+        # 首尾圆帽: 圆滑两端
+        painter.drawEllipse(QPointF(samples[0][0], samples[0][1]),
+                            max(0.25, samples[0][2] / 2.0), max(0.25, samples[0][2] / 2.0))
+        painter.drawEllipse(QPointF(samples[-1][0], samples[-1][1]),
+                            max(0.25, samples[-1][2] / 2.0), max(0.25, samples[-1][2] / 2.0))
     finally:
         painter.end()
     imaging.write_node_image(node, region, canvas.convertToFormat(QImage.Format_ARGB32))
