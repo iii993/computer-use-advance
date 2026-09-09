@@ -1933,12 +1933,33 @@ def op_draw_stroke(params):
     painter, region, canvas = _begin_region_paint(doc, node, bbox)
     try:
         import math
+        # 笔刷参数: brush 纹理(solid/dashed/dotted), cap 笔帽(round/flat/square)
+        brush = str(_arg(params, "brush", "solid")).strip().lower()
+        if brush not in ("solid", "dashed", "dotted"):
+            raise OpError("brush must be one of: solid, dashed, dotted")
+        cap = str(_arg(params, "cap", "round")).strip().lower()
+        _CAPS = {"round": Qt.RoundCap, "flat": Qt.FlatCap, "square": Qt.SquareCap}
+        cap_style = _CAPS.get(cap, Qt.RoundCap)
         # 统一填充色: 压感只改变粗细, 颜色恒定一致(不透明), 由 opacity 整体控制透明度
         base_op = max(0.0, min(1.0, _as_float(_arg(params, "opacity", 1.0), "opacity")))
         fill = QColor(color.red(), color.green(), color.blue(), int(round(base_op * 255)))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(fill))
         n = len(samples)
+
+        if brush in ("dashed", "dotted"):
+            # 纹理笔刷: 沿中心折线逐段画粗线(虚线/点线), 宽度取段平均, cap 控制端帽
+            pen_style = Qt.DashLine if brush == "dashed" else Qt.DotLine
+            painter.setBrush(Qt.NoBrush)
+            for i in range(n - 1):
+                (x0, y0, w0), (x1, y1, w1) = samples[i], samples[i + 1]
+                p = QPen(fill)
+                p.setWidthF(max(0.25, (w0 + w1) / 2.0))
+                p.setStyle(pen_style)
+                p.setCapStyle(cap_style)
+                painter.setPen(p)
+                painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+            painter.setPen(Qt.NoPen)
+
+        # solid 笔刷: 单路径填充(无接缝白线)
         # 每点法线: 中间点取前后两点连线方向(平均法线), 使包络点随曲线平滑转向
         normals = []
         for i in range(n):
@@ -1957,12 +1978,10 @@ def op_draw_stroke(params):
                 normals.append((0.0, -1.0))
             else:
                 normals.append((-dy / L, dx / L))
-        # 上下包络点
         up = [QPointF(s[0] + nx * (s[2] / 2.0), s[1] + ny * (s[2] / 2.0))
               for s, (nx, ny) in zip(samples, normals)]
         low = [QPointF(s[0] - nx * (s[2] / 2.0), s[1] - ny * (s[2] / 2.0))
                for s, (nx, ny) in zip(samples, normals)]
-        # 关键: 上包络正向连、下包络反向连成一条闭合路径, 一次填充 -> 没有多边形接缝/白线
         path = QPainterPath()
         path.moveTo(up[0])
         for qp in up[1:]:
@@ -1970,12 +1989,14 @@ def op_draw_stroke(params):
         for qp in reversed(low):
             path.lineTo(qp)
         path.closeSubpath()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(fill))
         painter.drawPath(path)
-        # 所有采样点补同色圆(round join/cap): 填平折角处包络自交留下的空隙,
-        # 并圆滑两端; 与路径同色不透明, 不会产生颜色差异或节状感
-        for (sx_, sy_, sw_) in samples:
-            painter.drawEllipse(QPointF(sx_, sy_),
-                                max(0.25, sw_ / 2.0), max(0.25, sw_ / 2.0))
+        # 端帽: round 补圆帽(填折角+圆滑端), flat/square 平头(不补圆)
+        if cap == "round":
+            for (sx_, sy_, sw_) in samples:
+                painter.drawEllipse(QPointF(sx_, sy_),
+                                    max(0.25, sw_ / 2.0), max(0.25, sw_ / 2.0))
     finally:
         painter.end()
     imaging.write_node_image(node, region, canvas.convertToFormat(QImage.Format_ARGB32))
@@ -2027,6 +2048,8 @@ def op_draw_pressure_curve(params):
             "oversample": opts.get("oversample", 16),
             "smooth": _as_bool(opts.get("smooth", True), "smooth"),
             "opacity": opts.get("opacity", 1.0),
+            "brush": opts.get("brush", "solid"),
+            "cap": opts.get("cap", "round"),
         }
         return sp
 
