@@ -1156,8 +1156,26 @@ def op_get_image(params):
     if _as_bool(_arg(params, "include_data", True), "include_data"):
         result["png_base64"] = imaging.qimage_to_png_b64(scaled)
     return result
-
-
+@op("view_image", timeout=30.0, mutates=False)
+def op_view_image(params):
+    """读取本地图片文件(PNG/JPEG等)并返回PNG base64, 供模型查看. max_size 最长边缩放."""
+    path = _abspath(_req(params, "path"), "path")
+    if not os.path.isfile(path):
+        raise OpError("No file at {0}".format(path), kind="not_found")
+    image = QImage(path)
+    if image is None or image.isNull():
+        raise OpError("Could not decode image: {0}".format(path))
+    image = image.convertToFormat(QImage.Format_ARGB32)
+    max_size = _as_int(_arg(params, "max_size", 1024), "max_size")
+    max_size = max(0, min(4096, max_size))
+    scaled, factor = imaging.scale_to_fit(image, max_size)
+    return {
+        "source": "file",
+        "path": path,
+        "size": {"width": scaled.width(), "height": scaled.height()},
+        "scale": round(factor, 6),
+        "png_base64": imaging.qimage_to_png_b64(scaled),
+    }
 @op("get_pixel", timeout=20.0)
 def op_get_pixel(params):
     doc = resolve_document(params.get("document"))
@@ -1476,6 +1494,7 @@ def op_draw(params):
             "Every command falls outside the {0}x{1} canvas, so nothing would "
             "change.".format(doc.width(), doc.height()))
 
+    _snapshot_region(doc, node, region)
     canvas = imaging.read_node_image(node, region)
     canvas = canvas.convertToFormat(QImage.Format_ARGB32_Premultiplied)
 
@@ -1508,6 +1527,73 @@ def op_draw(params):
     }
 
 
+
+
+# ---------- 撤销栈(快照式撤回) ----------
+_UNDO_STACK = []  # [(doc_key, node_key, x, y, w, h, bytes), ...] 栈顶=最近
+_UNDO_MAX = 50
+
+def _doc_key(doc):
+    return (doc.fileName() or doc.name()) + "|" + doc.name()
+
+def _node_key(node):
+    try:
+        uid = node.uniqueId().toString().strip('{}')
+        return uid if uid else node.name()
+    except Exception:
+        return node.name()
+
+def _snapshot_region(doc, node, region):
+    """绘制前把受影响区域原始像素压入撤销栈(只存标识+region+bytes, 不持有libkis对象)."""
+    if region.width() <= 0 or region.height() <= 0:
+        return
+    try:
+        raw = bytes(node.pixelData(region.x(), region.y(),
+                                  region.width(), region.height()))
+        _UNDO_STACK.append((_doc_key(doc), _node_key(node),
+                            region.x(), region.y(),
+                            region.width(), region.height(), raw))
+        if len(_UNDO_STACK) > _UNDO_MAX:
+            del _UNDO_STACK[0:len(_UNDO_STACK) - _UNDO_MAX]
+    except Exception:
+        pass
+
+def _find_node_by_key(root, node_key):
+    """在图层树中按 node_key 找节点."""
+    if _node_key(root) == node_key:
+        return root
+    for child in list(root.childNodes()):
+        hit = _find_node_by_key(child, node_key)
+        if hit is not None:
+            return hit
+    return None
+
+@op("undo", timeout=30.0, mutates=True)
+def op_undo(params):
+    """撤回最近一次绘制(快照式): 恢复被改区域像素到绘制前状态. 栈空时无操作."""
+    if not _UNDO_STACK:
+        return {"ok": True, "undone": 0,
+                "note": "No drawing history to undo."}
+    doc_key, node_key, x, y, w, h, raw = _UNDO_STACK.pop()
+    try:
+        from krita import Krita
+        from PyQt5.QtCore import QByteArray
+        doc = None
+        for d in Krita.instance().documents():
+            if _doc_key(d) == doc_key:
+                doc = d
+                break
+        if doc is None:
+            return {"ok": False, "undone": 0, "error": "document no longer open"}
+        node = _find_node_by_key(doc.rootNode(), node_key)
+        if node is None:
+            return {"ok": False, "undone": 0, "error": "layer not found"}
+        node.setPixelData(QByteArray(bytes(raw)), x, y, w, h)
+        _refresh(doc)
+        return {"ok": True, "undone": 1, "region": {"x": x, "y": y,
+                "width": w, "height": h}}
+    except Exception as exc:
+        return {"ok": False, "undone": 0, "error": str(exc)}
 
 # --------------------------------------------------------------------------
 # painting: point / smooth path / pressure stroke / brush texture
@@ -1543,6 +1629,7 @@ def _begin_region_paint(doc, node, bbox):
     region = bbox.intersected(doc_rect)
     if region.width() <= 0 or region.height() <= 0:
         raise OpError("Drawing region lies outside the %dx%d canvas." % (doc.width(), doc.height()))
+    _snapshot_region(doc, node, region)
     canvas = imaging.read_node_image(node, region)
     canvas = canvas.convertToFormat(QImage.Format_ARGB32_Premultiplied)
     painter = QPainter()
@@ -1979,6 +2066,7 @@ def _paint_region(doc, node, bbox):
     region = bbox.intersected(doc_rect)
     if region.width() <= 0 or region.height() <= 0:
         raise OpError("Region lies outside the %dx%d canvas." % (doc.width(), doc.height()))
+    _snapshot_region(doc, node, region)
     img = imaging.read_node_image(node, region).convertToFormat(QImage.Format_ARGB32)
     return region, img
 

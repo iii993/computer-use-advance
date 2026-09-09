@@ -625,6 +625,15 @@ TOOLS = [
          {"code": {"type": "string"}},
          required=["code"]),
 
+    tool("undo",
+         "撤回最近一次绘制(快照式). 每次绘制工具调用前会自动快照受影响区域, undo 恢复其像素到绘制前. 无历史时无操作.",
+         {"document": DOCUMENT_PROP}),
+
+    tool("view_image",
+         "读取本地图片文件(PNG/JPEG/WebP等)并返回给模型查看. 可用于查看导出的图或任意图片文件. max_size 限制最长边(默认1024, 不放大).",
+         {"path": {"type": "string", "description": "本地图片绝对路径"},
+          "max_size": {"type": "integer", "default": 1024}},
+         required=["path"], op="view_image", image=True),
     tool("self_test",
          "Verify the bridge end to end: document creation, pixel round-trip, "
          "channel order, drawing, PNG encoding and layer handling. Run this "
