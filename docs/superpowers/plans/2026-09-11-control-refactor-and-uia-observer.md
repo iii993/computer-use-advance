@@ -74,9 +74,11 @@ def move(x=None, y=None, mode="smooth", duration_ms=None,
     """
 
 
-def click(button="left", hold_ms=0, clicks=1, interval_ms=None, at=None,
-          points=None, gap_ms=0, cfg=None):
-    """只点击(给了 at / points 才会先移动)。
+def click(button="left", x=None, y=None, hold_ms=0, clicks=1, interval_ms=None,
+          at=None, points=None, gap_ms=0, cfg=None):
+    """只点击(给了 x/y / at / points 才会先移动)。
+    x/y 保留在原有位置参数上: click("right", 100, 200) 与旧调用逐字兼容;
+    新增参数一律走关键字(实施偏差, 见 §8)。
     单点: click(x=100, y=200, hold_ms=120)        # at 形式: 先瞬移再点
     序列: click(points=[[100, 200], [300, 400, 60]], button="left", gap_ms=200)
     """
@@ -211,13 +213,13 @@ def zoom_to_screen(self, px, py) -> dict:
 **"看准再点"闭环(写进工具描述与 AI 动作表):**
 
 ```text
-screenshot            → 全屏粗定位(截图内像素)
-zoom(x, y, factor=10) → 放大目标附近, 得到放大图 + meta(screen_rect/factor)
-zoom_to_screen(px,py) → 放大图里的(px,py) → 屏幕真实坐标
-click(x, y)           → 用上一步得到的屏幕坐标点击(注意: click 用屏幕坐标, 不是截图内像素)
+screenshot              → 全屏粗定位(截图内像素)
+zoom(x, y, factor=10)   → 放大目标附近(入参=截图内像素), 返回放大图 + zoom_meta(screen_rect/factor/img_rect)
+zoom_to_screen(px, py)  → 放大图里的(px,py) → screen_x/screen_y(屏幕) + img_x/img_y(截图内像素)
+click(x, y)             → 用上一步返回的 img_x/img_y 点击
 ```
 
-> 坐标口径提醒:`screenshot` 走"截图内像素"(server 侧换算),`zoom`/`zoom_to_screen` 走"屏幕物理像素"。两者不同,文档与工具描述都要显式标注,否则模型必然混用。
+> **坐标口径(实现时统一为一种, 见 §8)**:MCP 层所有工具(含 `zoom`/`zoom_to_screen`)一律收发"截图内像素", 屏幕坐标换算只发生在 MCP 边界;因此 `zoom_to_screen` **同时**返回 `screen_x/screen_y`(屏幕物理)与 `img_x/img_y`(截图内像素, 可直接交给 `click`/`move`)。`computer_core/observe.py` 内部仍按屏幕物理坐标工作。
 
 ### 2.4 UIA 文本观察通道(`computer_core/uia.py`)
 
@@ -389,6 +391,8 @@ pynput 导入 OK: ['unknown', 'left', 'middle', 'right', 'x1', 'x2']
 ---
 
 ## 4. 任务分解
+
+> ✅ 5 个 Task 已于 2026-09-11 全部实施并通过验收(41 个单测全绿);提交链、落地偏差与验证结果见 §6 / §8。
 
 > 项目当前**没有测试基础设施**。为避免新增依赖,测试统一用标准库 `unittest`,放 `tests/`,用 `python -m unittest` 运行。只对**纯函数**(坐标换算、参数校验、映射表)写单元测试;序列的 `sleep` 节奏用 `mock` 断言调用次数与参数(不真的等待);真实鼠标/键盘行为用人工验证步骤。
 
@@ -656,7 +660,7 @@ def click(button: str = "left", hold_ms: float = 0, clicks: int = 1,
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `python -m unittest tests.test_mouse_input -v`
-Expected: PASS (17 tests) —— 4 个原有 + 移动/点击独立性 3 + 序列校验 7 + 序列执行节奏 3
+Expected: PASS (18 tests) —— 4 个原有 + 移动/点击独立性 4(含旧位置参数兼容) + 序列校验 7 + 序列执行节奏 3
 
 > 沙箱提示:此步需要 DSH 提权到 `danger-full-access`(见 §3.9)。
 
@@ -1400,34 +1404,36 @@ git commit -m "新增:UIA 窗口级文本观察通道(纯 ctypes 零依赖, 含�
 # button 的 enum 由 ["left","right","middle"] 扩展为 ["left","right","middle","x1","x2"]
 ```
 
-- [ ] **Step 2: 在 `_run_single` 中分派**
+- [x] **Step 2: 在 `_run_single` 中分派**(以下为实际落地版本)
 
 ```python
-elif act == "move":
-    # 单点走 _img_* 换算; 序列要求模型直接给屏幕坐标(zoom_to_screen 的产物)或截图内坐标
+# click 也在此分派: 新增 hold_ms / points / gap_ms
+if act == "click":
+    kw = {"button": action.get("button", "left"),
+          "clicks": int(action.get("clicks", 1)),
+          "hold_ms": float(action.get("hold_ms", 0)),
+          "gap_ms": float(action.get("gap_ms", 0))}
     if action.get("points"):
-        pts = action["points"]
-        if action.get("coord") != "screen":
-            pts = [[_img_x(p[0]), _img_y(p[1])] + list(p[2:]) for p in pts]
-        return svc.move(points=pts, gap_ms=action.get("gap_ms", 0),
+        return svc.click(points=_img_points(action["points"]), **kw)
+    return svc.click(_img_x(action.get("x", 0)), _img_y(action.get("y", 0)), **kw)
+elif act == "move":
+    # 坐标一律"截图内像素"入参, server 侧 _img_points/_img_x 换算成屏幕坐标
+    if action.get("points"):
+        return svc.move(points=_img_points(action["points"]),
+                        gap_ms=action.get("gap_ms", 0),
                         mode=action.get("mode", "smooth"),
                         duration_ms=action.get("duration_ms"))
     return svc.move(_img_x(action["x"]), _img_y(action["y"]),
                     mode=action.get("mode", "smooth"),
                     duration_ms=action.get("duration_ms"))
-elif act == "zoom":
-    return svc.zoom_tool(action.get("x"), action.get("y"),
-                         action.get("factor", 10), action.get("src", 100))
 elif act == "zoom_to_screen":
     r = svc.zoom_to_screen(action["px"], action["py"])
-    return {"text": f"放大图像素({action['px']},{action['py']}) → 屏幕坐标 "
-                    f"({r['screen_x']}, {r['screen_y']}) [zoom seq={r['seq']} factor={r['factor']}]; "
-                    f"如需点击请用 click(x=..., y=...) 传屏幕坐标"}
-elif act == "list_windows":
-    return {"text": _UIA_SESSION.format_windows()}
+    r["img_x"], r["img_y"] = _to_img_xy(r["screen_x"], r["screen_y"])
+    r["note"] = "click/move 请用 img_x/img_y(截图内像素)"
+    return r
 ```
 
-> `zoom` 返回的是**图像**,走 `_image_result(...)`,并把 `meta` 作为附带的 text 块一并返回(模型两者都要读)。
+> `zoom` / `list_windows` **不在** `_run_single` 里: 它们在 `handle_tool_call` 特判, 因为要返回**图像**(`_image_result`)或整段文本。`zoom` 的附带文本块是 `zoom_meta`(`seq/factor/out_size/screen_rect/img_rect/hint`);`zoom_to_screen` 则同时给 `screen_x/screen_y` 与 `img_x/img_y`。
 
 - [ ] **Step 3: 更新 `ai_mode/controller.py` 的 `SYSTEM_PROMPT`**
 
@@ -1454,7 +1460,7 @@ import json; print(json.dumps([t['name'] for t in s.TOOLS if t['name'] == 'click
 print('OK')
 "
 ```
-Expected: 工具数 25(原 21 + 4),包含 `move`/`zoom`/`zoom_to_screen`/`list_windows`,且原有全部工具名仍在;
+Expected: 工具数 24(原 **20** + 4;设计初稿误把 SERVER_INFO 的 `computer` 也算成工具, 见 §8),包含 `move`/`zoom`/`zoom_to_screen`/`list_windows`,且原有全部工具名仍在;
 `click` 的 `button` enum 已含 `x1/x2`,`click`/`move` 的 schema 已含 `points`/`gap_ms`(上面那行 json 应打印出 points 的定义而非 null)。
 
 - [ ] **Step 5: 更新 README**
@@ -1480,30 +1486,37 @@ git commit -m "新增:MCP 工具 move/zoom/zoom_to_screen/list_windows, click �
 | BSTR 内存 | 已知泄漏 | 用 `wstring_at` 读后未 `SysFreeString` | 后续加 `oleaut32.SysFreeString` |
 | 放大镜多屏 | 未验证 | `clamp_region` 目前按单屏尺寸;多屏负坐标(`rect=(-8,-8,...)` 已在实测中出现)可能夹取错误。**反算受同一问题影响**(screen_rect 本身就可能夹错) | 需要时用 `SM_XVIRTUALSCREEN`/`SM_CXVIRTUALSCREEN` 取虚拟屏边界 |
 | 反算的时效性 | 已知局限(设计如此) | `zoom_to_screen` 用的是"最近一次 zoom"的映射,期间画面/窗口位置变化会让结果过时;并发调用时后一次 zoom 会覆盖前一次 | 工具描述与 AI 动作表已写明"画面变化要重新 zoom";不做自动失效检测(需要屏幕哈希,成本高) |
+| AI 模式 zoom 无图像 | 已知限制 | `ai_mode` 的动作级结果只回文本, 放大图进不了对话;该动作返回 meta + 提示 | 需要看图用 `take_screenshot`, 或走 MCP 通道的 `zoom` |
 | 侧键被驱动映射 | 环境相关 | 部分鼠标厂商驱动把 x1/x2 硬映射为前进/后退 | 文档说明即可,无法绕过 |
 
 **风险**:UIA 通道对 Electron/Chromium 应用(实测里 `Chrome_WidgetWin_1`)的**控件树**深度有限,且需要应用开启无障碍支持。**游戏/Canvas 场景必须回退到截图 + 放大镜**。
 
 ---
 
-## 6. 验证清单(全部完成后逐条核对)
+## 6. 验证清单(2026-09-11 实施后逐条核对)
 
-- [ ] `python -m unittest discover tests -v` 全绿
-- [ ] `ComputerService().click(100,100,button='x1',hold_ms=200,clicks=2)` 不抛异常
-- [ ] 旧调用 `svc.click(x, y, button="right", clicks=2)` 行为与重构前一致(先瞬移再双击)
-- [ ] `svc.click()`(无坐标)不产生任何移动调用;`svc.move()` 不产生任何点击调用
-- [ ] `move(points=[[..],[..]], duration_ms=400, gap_ms=300)` 走完每个点、每段耗时约 400ms、相邻点之间停约 300ms、**最后一点后不再等待**;三元点的 `duration_ms` 覆盖函数级值
-- [ ] `click(points=[[..],[..]], hold_ms=150, gap_ms=500)` 每个点都点击、每点按压约 150ms、点间停约 500ms;`interval_ms`(双击间隔)未被 `gap_ms` 影响
-- [ ] `points` 与 `x`/`y`/`at` 同时传入时抛 `ValueError`;空列表、长度为 1/4 的元素、非数字、`gap_ms<0`、三元 `t` 越界都抛 `ValueError`
-- [ ] `zoom()` 输出图上 1px 细线为硬边(证明用了 NEAREST)
-- [ ] `zoom()` 的 `meta.factor` 在 `src` 很大时自动下调,且 `screen_rect` 与实际截图区域一致
-- [ ] `px_to_screen(*screen_to_px(sx, sy, meta), meta) == (sx, sy)`(正反变换互逆)
-- [ ] `zoom_to_screen` 在未 zoom 时抛 `RuntimeError`、像素越界时抛 `ValueError`(错误信息含真实 `out_size`);正常时返回的 `seq` 与 `zoom` 的 `seq` 一致
-- [ ] 按"zoom → zoom_to_screen → click"闭环点中一个 10X 放大图里选中的小目标(人工验证一次)
-- [ ] `UIA().format_windows()` 能列出当前所有可见窗口
-- [ ] MCP `TOOLS` 工具数为 25,原有 21 个工具名全部保留
-- [ ] `ai_mode` 的 `SYSTEM_PROMPT` 原有 19 种动作一行未删
-- [ ] `git status` 干净,无临时文件入库
+**已自动验证(以实测输出为准):**
+
+- [x] `python -m unittest discover tests -v` 全绿 —— **41 tests OK**(mouse 18 / service 7 / observe 13 / uia 3)
+- [x] 旧调用 `svc.click(x, y, button="right", clicks=2)` 与 `mouse.click("right", 100, 200)` 行为不变(单测覆盖;`ComputerService().get_state()` 正常返回)
+- [x] `svc.click()`(无坐标)不产生任何移动调用;`svc.move()` 不产生任何点击调用
+- [x] `points` 与 `x`/`y`/`at` 同时传入抛 `ValueError`;空列表、长度为 1/4 的元素、非数字、`gap_ms<0`、三元时间值越界都抛 `ValueError`
+- [x] `zoom()` 用了 NEAREST:实测同一区域放大前后颜色数相等(84 == 84),细线未被插值糊掉
+- [x] `zoom()` 的 meta 含 `screen_rect/factor/src_size/out_size/cursor/seq/to_screen/from_screen`;`src=100, factor=10` 输出 1000×1000
+- [x] `px_to_screen(*screen_to_px(sx, sy, meta), meta) == (sx, sy)` —— 往返实测回到 `(1068, 815)`(鼠标位置)
+- [x] `zoom_to_screen` 像素越界抛 `ValueError`(错误信息含真实 `out_size`)、未 zoom 时抛 `RuntimeError`(单测)
+- [x] `UIA().list_windows()` 实测列出 7 个可见顶层窗口(含 hwnd/type/rect/class/name)
+- [x] MCP `TOOLS` 实测 **24** 个,原有 20 个工具名全部保留;`click` 的 button enum 已含 `x1/x2`,`hold_ms`/`points`/`gap_ms` 都在 schema 里
+- [x] MCP `zoom` 返回 `image`+`text`(text 为 `zoom_meta`);`zoom_to_screen`/`list_windows` 返回文本
+- [x] `ai_mode` 的 `SYSTEM_PROMPT` 原有 19 种动作一行未删(只追加)
+- [x] `git status` 干净(测试产物已进 `.gitignore`)
+
+**待人工验证(会真的移动/点击鼠标, 未自动执行):**
+
+- [ ] `move(points=[[..],[..]], duration_ms=400, gap_ms=300)` 走完每个点、每段约 400ms、点间停约 300ms、**最后一点后不再等待**;三元点的 `duration_ms` 覆盖函数级值
+- [ ] `click(points=[[..],[..]], hold_ms=150, gap_ms=500)` 每点按压约 150ms、点间停约 500ms;`interval_ms`(双击间隔)未被 `gap_ms` 影响
+- [ ] `ComputerService().click(100,100,button='x1',hold_ms=200,clicks=2)` 真实触发侧键与长按
+- [ ] 按"zoom → zoom_to_screen → click"闭环点中放大图里选中的小目标
 
 ---
 
@@ -1548,4 +1561,32 @@ python main.py
 | `.tmp/uia_probe6.py` | 条件对象来源试探 | 未通过(11/12/13 崩) |
 | `.tmp/mouse_probe.py` | pynput Button 枚举 | 需提权后通过(x1/x2 存在) |
 
-> `.tmp/` 目前**未被 `.gitignore` 覆盖**(现有规则只有 `tmp/`、`vendor/`、`logs/`、`__pycache__/`、`.pip-cache/`、`.venv/`、`screenshot_*.jpg|png`)。开工前应把 `.tmp/`、`work/` 以及根目录那些测试 PNG(`catgirl_happy_chibi.png`、`表情包_*.png` 等)补进 `.gitignore`,否则 `git status` 永远不干净,违反仓库"提交前确认干净"的约定。
+> ✅ **已处理**(commit `e25558a`):`.gitignore` 增补了 `.tmp/`、`work/`、`catgirl_happy_chibi.png`、`angry_bird_riding_bike.png`、`*测试*.png`、`表情包_*.png`;`git status` 现在干净。开工时的落地脚本留在 `.tmp/`(已忽略):`verify_zoom.py`、`smoke_mcp.py`、`verify_service_observe.py`。
+
+---
+
+## 8. 实施记录(2026-09-11 落地, 与设计初稿的偏差)
+
+**提交链(中文 commit, 一次提交一个逻辑改动):**
+
+| commit | 内容 |
+|---|---|
+| `e25558a` | 构建:gitignore 忽略测试产物(`.tmp/`、`work/`、试画 PNG) |
+| `417e8e5` | Task 1 输入层:移动/点击独立 + 执行时间 + 坐标序列 |
+| `a4c7c7e` | Task 2 服务层:click 扩展(hold_ms/侧键/序列) + 独立 move |
+| `4b54150` | Task 3 放大镜 observe.py + 像素反算 |
+| `1427638` | Task 4 UIA 窗口级观察 uia.py |
+| `c8f8823` | 服务层封装观察能力(zoom_tool/zoom_to_screen/describe_windows) |
+| `1dffa08` | Task 5 MCP 工具 move/zoom/zoom_to_screen/list_windows + AI 动作表 + README |
+
+**落地偏差(实现与初稿不同, 一律以代码为准):**
+
+1. **`mouse.click` 保留 `x`/`y` 位置参数**。`input_engine/mouse.py` 原本已有 `click(button, x, y)`, 且 `computer_core/service.py` 与 `modes/work.py` 在调用。初稿把 `hold_ms` 放第二位会让 `click("right", 100, 200)` **静默错位**,因此实际签名是 `click(button="left", x=None, y=None, hold_ms=0, clicks=1, interval_ms=None, at=None, points=None, gap_ms=0, cfg=None)`,新增参数一律关键字传入。
+2. **MCP 坐标口径统一为"截图内像素"**。初稿要求 `zoom`/`zoom_to_screen` 走屏幕物理坐标,但 MCP 其余工具都是截图内像素,模型混用必错。实际做法:换算只发生在 server 边界,`zoom_to_screen` 同时返回 `screen_x/screen_y` 与 `img_x/img_y`。
+3. **工具数是 24 而非 25**。初稿把 `SERVER_INFO` 里的 `"name": "computer"` 也当成了工具;`TOOLS` 实际 **20** 个,加 4 个新工具后为 24。
+4. **Task 1 单测 18 个而非 17** —— 多了一个"旧位置参数兼容"用例。全量 **41 tests**。
+5. **`zoom`/`list_windows` 在 `handle_tool_call` 特判**(返回图像/整段文本),不走 `_run_single`;`move`/`click`/`zoom_to_screen` 走统一执行器,因此 `run_actions` 里也能批量调用 `move`/`zoom_to_screen`。
+6. **AI 模式的 `zoom` 只回元数据**,放大图未接入动作级对话(见 §5)。
+7. **新增 `tests/__init__.py`**,让 `python -m unittest discover tests` 与 `python -m unittest tests.test_xxx` 两种方式都能跑。
+
+**实测环境**: Python 3.14.3 / Pillow 12.3.0 / pynput 1.8.2 / 屏幕 1920×1080 / DSH `danger-full-access`。
