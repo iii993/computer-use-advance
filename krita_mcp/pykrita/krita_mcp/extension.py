@@ -9,6 +9,7 @@ from krita import Extension, Krita
 from . import ops
 from .httpserver import DEFAULT_PORT, Bridge, info_file_path
 from .mainthread import MainThreadInvoker
+from . import boot_log
 
 SETTINGS_GROUP = "krita_mcp"
 
@@ -31,6 +32,7 @@ class KritaMcpExtension(Extension):
     # -- Krita hooks ------------------------------------------------------
     def setup(self):
         # Runs on the GUI thread at startup, so the invoker binds to it.
+        boot_log("extension.setup called")
         self._invoker = MainThreadInvoker()
         krita = Krita.instance()
 
@@ -42,7 +44,10 @@ class KritaMcpExtension(Extension):
             pass
 
         if self._read_bool("autostart", True):
-            self._start(quiet=True)
+            ok = self._start(quiet=True)
+            boot_log("autostart=%s -> %s" % (True, ok))
+        else:
+            boot_log("autostart disabled by settings")
 
     def createActions(self, window):
         self._toggle_action = window.createAction(
@@ -88,11 +93,14 @@ class KritaMcpExtension(Extension):
                 logger=_log,
             )
             self._bridge.start(self._read_port())
+            boot_log("bridge started on port %s" % self._bridge.port)
             self._start_error = None
             self._refresh_action_text()
             return True
         except Exception as exc:
             self._start_error = "{0}: {1}".format(type(exc).__name__, exc)
+            boot_log("bridge start FAILED: %s: %s\n%s"
+                     % (type(exc).__name__, exc, traceback.format_exc()))
             _log("[krita-mcp] failed to start:\n" + traceback.format_exc())
             self._bridge = None
             self._refresh_action_text()
