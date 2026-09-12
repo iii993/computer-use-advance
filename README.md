@@ -238,12 +238,12 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 
 ## 9 🔌 DSH MCP 插件集成
 
-> ⚠️ **已于 2026-09-06 从 DSH 卸载**(agent 场景作用有限)。代码保留在 `computer_mcp/`。
-> 重新启用: 在 `H:\dsh-home\profiles\web\cordis.patch.yml` 加回 mcp-computer 注册块后重启 DSH web。
+> ✅ **已于 2026-09-12 重新挂载到 DSH**(computer + krita 两个 MCP)。
+> 注册位置: `H:\dsh-home\profiles\web\cordis.patch.yml` 里的 `mcp-computer` / `mcp-krita` 两个 insert 块。
+> **保存即热加载**(cordis HMR):无需重启 DSH web,实测约 8 秒内新子进程起来、工具列表刷新。
+> (2026-09-06 曾因"agent 场景作用有限"卸下;补齐坐标契约与高层工具后重新挂回。)
 
-原注册位置: `H:\dsh-home\profiles\web\cordis.patch.yml`
-
-启用时 agent 可调用以下工具:
+现在 agent 可直接调用以下工具(**不需要写脚本**):
 
 | 工具 | 用途 |
 | --- | --- |
@@ -255,14 +255,18 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 | `mcp__computer__list_windows` | UIA 无障碍树窗口清单(文本) |
 | `mcp__computer__focus_window` | 按 hwnd/标题把窗口激活到前台 |
 | `mcp__computer__send_text` | 输入文字并按组合键提交(如 ctrl+enter) |
-
-> 📘 **完整接口文档(坐标契约 / 26 个工具逐个说明 / Python API / 新增工具步骤)见 [docs/MCP接口文档.md](docs/MCP接口文档.md)。**
-> 当前工具数 **26**;所有坐标工具支持 `coord=image|screen`(缺省 image=最近一次截图内的像素),返回值会回显口径。
 | `mcp__computer__type_text` / `press_key` / `combo` | 键盘输入 |
 | `mcp__computer__switch_mode` | 切换 game/draw/work 模式 |
 | `mcp__computer__draw_curve` / `set_brush` | 绘画操作 |
 | `mcp__computer__set_config` | 白名单内改配置 |
 | `mcp__computer__check_vision` | 检测模型识图能力 |
+
+> 📘 **完整接口文档(坐标契约 / 26 个工具逐个说明 / Python API / 新增工具步骤)见 [docs/MCP接口文档.md](docs/MCP接口文档.md)。**
+> 当前工具数 **26**;所有坐标工具支持 `coord=image|screen`(缺省 image=最近一次截图内的像素),返回值会回显口径。
+
+### 绘画 MCP(krita)
+
+`mcp__krita__*`:画布/图层/图形/压感曲线/液化涂抹/导出/看图。**需要 Krita 在运行且已装 `krita_mcp` 桥接插件**;未运行时调用会返回"Could not reach the Krita MCP bridge",这是预期行为。
 
 ---
 

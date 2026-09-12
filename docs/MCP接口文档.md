@@ -41,7 +41,39 @@ python H:\cu-a\computer_mcp\server.py
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_state","arguments":{}}}
 ```
 
-在 DSH 里重新挂载(已卸载,需要时再加回):在 `H:\dsh-home\profiles\web\cordis.patch.yml` 加回 mcp-computer 注册块并重启 DSH web。
+### 2.1 挂载到 DSH(已完成,2026-09-12)
+
+`H:\dsh-home\profiles\web\cordis.patch.yml` 里有两个 insert 块:
+
+```yaml
+- insert:
+    - id: mcp-computer
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: computer
+        transport: stdio
+        command: 'H:\PY\python.exe'          # 必须绝对路径: GUI 进程 PATH 里未必有 python
+        args: ['H:\cu-a\computer_mcp\server.py']
+        env:
+          PYTHONIOENCODING: 'utf-8'            # 见下方"编码坑"
+```
+
+`mcp-krita` 同构,args 指向 `H:\cu-a\krita_mcp\mcp_server.py`。
+
+- **热加载**: 保存该文件即生效(cordis HMR),**不需要重启 DSH web**。实测约 8 秒后新的 `python.exe … server.py` 子进程起来、工具列表刷新;核对方式:
+  `Get-CimInstance Win32_Process -Filter "Name='python.exe'" | ? CommandLine -like '*computer_mcp*'`
+- 工具前缀: `mcp__computer__*`、`mcp__krita__*`
+
+### 2.2 编码坑(必看,踩过)
+
+Windows 下 Python 的 stdio 默认走 **locale 编码(GBK)**,而 MCP 客户端按 **UTF-8** 收发。不在 `main()` 里统一,后果是:**工具描述在宿主侧全是乱码**、中文参数(`send_text` 的中文)与中文返回值也会坏。
+
+```python
+sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+```
+
+`computer_mcp/server.py` 已修;profile 里再给 `PYTHONIOENCODING=utf-8` 做双保险。**自己写新 MCP server 时务必照做**(可参考 `krita_mcp/mcp_server.py` 的 `main()`)。
 
 ---
 
