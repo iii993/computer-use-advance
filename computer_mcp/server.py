@@ -96,7 +96,10 @@ TOOLS = [
                                     "hold_ms": {"type": "number", "description": "按压时长(毫秒), 0~5000, 默认 0"},
                                     "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}},
                                                "description": "坐标序列 [[x,y], [x,y,hold_ms], ...], 与 x/y 互斥; 每个点都会点击"},
-                                    "gap_ms": {"type": "number", "description": "序列相邻两点的间歇(毫秒), 默认 0; 与双击间隔无关"}}}},
+                                    "gap_ms": {"type": "number", "description": "序列相邻两点的间歇(毫秒), 默认 0; 与双击间隔无关"},
+                                    "move_mode": {"type": "string", "enum": ["instant", "smooth"],
+                                                  "description": "给了 x/y 时的定位方式: instant 瞬移(默认) / smooth 平滑"},
+                                    "duration_ms": {"type": "number", "description": "move_mode=smooth 时的移动耗时(毫秒)"}}}},
     {"name": "drag", "description": "拖拽: 按住左键从(x1,y1)到(x2,y2), 坐标为截图内像素.",
      "inputSchema": {"type": "object",
                      "properties": {"x1": {"type": "number"}, "y1": {"type": "number"},
@@ -204,10 +207,14 @@ def _run_single(action: dict) -> dict:
             kw = {"button": action.get("button", "left"),
                   "clicks": int(action.get("clicks", 1)),
                   "hold_ms": float(action.get("hold_ms", 0)),
-                  "gap_ms": float(action.get("gap_ms", 0))}
+                  "gap_ms": float(action.get("gap_ms", 0)),
+                  "move_mode": action.get("move_mode", "instant"),
+                  "duration_ms": action.get("duration_ms")}
             if action.get("points"):
                 return svc.click(points=_img_points(action["points"]), **kw)
-            return svc.click(_img_x(action.get("x", 0)), _img_y(action.get("y", 0)), **kw)
+            if action.get("x") is None or action.get("y") is None:
+                return svc.click(**kw)                 # 不给坐标 = 原地点击(不能默认 0,0)
+            return svc.click(_img_x(action["x"]), _img_y(action["y"]), **kw)
         elif act == "move":
             mode = action.get("mode", "smooth")
             dur = action.get("duration_ms")
@@ -303,7 +310,8 @@ def handle_tool_call(name: str, args: dict) -> dict:
         if name == "zoom_to_screen":
             r = svc.zoom_to_screen(args["px"], args["py"])
             r["img_x"], r["img_y"] = _to_img_xy(r["screen_x"], r["screen_y"])
-            r["note"] = "click/move 请用 img_x/img_y(截图内像素); 画面已变化请重新 zoom"
+            r["img_size"] = [_img_w, _img_h]
+            r["note"] = ("img_x/img_y 是 img_size 口径的截图坐标; 画面或截图尺寸变化后请重新 zoom")
             return _text_result(json.dumps(r, ensure_ascii=False))
         if name == "list_windows":
             return _text_result(svc.describe_windows())

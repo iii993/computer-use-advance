@@ -276,6 +276,10 @@ class AIController:
                                      clicks=int(action.get("clicks", 1)),
                                      hold_ms=float(action.get("hold_ms", 0)),
                                      gap_ms=float(action.get("gap_ms", 0)))
+                if action.get("x") is None or action.get("y") is None:
+                    return svc.click(button=action.get("button", "left"),
+                                     clicks=int(action.get("clicks", 1)),
+                                     hold_ms=float(action.get("hold_ms", 0)))
                 return svc.click(action.get("x", 0), action.get("y", 0),
                                  button=action.get("button", "left"),
                                  clicks=int(action.get("clicks", 1)),

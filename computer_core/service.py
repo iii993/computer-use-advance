@@ -105,7 +105,8 @@ class ComputerService:
 
     def click(self, x=None, y=None, button: str = "left", clicks: int = 1,
               hold_ms: float = 0, interval_ms: float | None = None,
-              move_mode: str = "instant", points=None, gap_ms: float = 0) -> dict:
+              move_mode: str = "instant", points=None, gap_ms: float = 0,
+              duration_ms=None) -> dict:
         """点击。给 points 走序列; 给 x/y 先定位(move_mode=instant 瞬移 / smooth 平滑)再点; 都不给则原地点击。
 
         - hold_ms: 按压时长(毫秒, 0~5000)
@@ -114,6 +115,12 @@ class ComputerService:
         """
         if move_mode not in ("instant", "smooth"):
             raise ValueError(f"未知 move_mode: {move_mode} (可选 instant/smooth)")
+        if gap_ms < 0:
+            raise ValueError(f"gap_ms 必须 >= 0, 收到 {gap_ms}")
+        if points is not None and (x is not None or y is not None):
+            raise ValueError("points 与 x/y 互斥, 只能给一个")
+        if (x is None) != (y is None):
+            raise ValueError("x 与 y 必须同时提供(只给一个会点错位置)")
 
         if points is not None:
             mouse.click(button=button, hold_ms=hold_ms, clicks=clicks,
@@ -126,11 +133,12 @@ class ComputerService:
         at = None
         if x is not None and y is not None:
             if move_mode == "smooth":
-                mouse.move(x, y, mode="smooth")    # 移动与点击独立: 平滑段单独调用
+                # 移动与点击独立: 平滑段单独调用, duration_ms 控制整段耗时
+                mouse.move(x, y, mode="smooth", duration_ms=duration_ms)
             else:
                 at = (x, y)                         # 旧行为: 点击内部瞬移
         mouse.click(button=button, hold_ms=hold_ms, clicks=clicks,
-                    interval_ms=interval_ms, at=at, points=None)
+                    interval_ms=interval_ms, at=at, points=None, gap_ms=gap_ms)
         log.info("click %s hold=%sms clicks=%d at=%s", button, hold_ms, clicks, at)
         pts = [[x, y]] if at else []
         return {"count": len(pts), "points": pts, "gap_ms": gap_ms,

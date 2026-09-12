@@ -73,5 +73,38 @@ class TestServiceMoveAndSequence(unittest.TestCase):
             self.assertIsNone(mc.call_args.kwargs["at"])   # 已单独移动, 点击不再定位
 
 
+class TestServiceValidationAfterReview(unittest.TestCase):
+    """代码审查后补的边界用例。"""
+
+    def _svc(self):
+        return service.ComputerService(config={"ai": {}, "draw": {}})
+
+    def test_gap_ms_negative_raises_on_single_point(self):
+        svc = self._svc()
+        with self.assertRaises(ValueError):
+            svc.click(10, 20, gap_ms=-1)
+
+    def test_only_one_of_xy_raises(self):
+        svc = self._svc()
+        with self.assertRaises(ValueError):
+            svc.click(10, None)
+        with self.assertRaises(ValueError):
+            svc.click(None, 20)
+
+    def test_points_and_xy_are_mutually_exclusive(self):
+        svc = self._svc()
+        with self.assertRaises(ValueError):
+            svc.click(10, 20, points=[[1, 2]])
+        with self.assertRaises(ValueError):
+            svc.move(10, 20, points=[[1, 2]])
+
+    def test_smooth_move_mode_forwards_duration(self):
+        svc = self._svc()
+        with mock.patch.object(service.mouse, "move") as mm, \
+             mock.patch.object(service.mouse, "click"):
+            svc.click(10, 20, move_mode="smooth", duration_ms=400)
+            self.assertEqual(mm.call_args.kwargs["duration_ms"], 400)
+
+
 if __name__ == "__main__":
     unittest.main()
