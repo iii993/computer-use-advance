@@ -87,17 +87,53 @@ class ComputerService:
         return base64.b64encode(self.screenshot(scale, quality)).decode()
 
     # ---------- 鼠标 ----------
-    def move(self, x: float, y: float):
-        mouse.move_absolute(x, y)
+    def move(self, x=None, y=None, mode: str = "smooth", duration_ms=None,
+             points=None, gap_ms: float = 0) -> dict:
+        """只移动, 不点击。单点(x/y)或序列(points)二选一, gap_ms 为序列步间间隔。
 
-    def click(self, x: float, y: float, button: str = "left", clicks: int = 1):
-        if clicks > 1:
-            mouse.move_absolute(x, y)
-            for _ in range(clicks):
-                mouse.mc.click(mouse._btn(button), 1)
-        else:
-            mouse.click(button, x, y)
-        log.info("click %s(%d) @ (%.0f, %.0f)", button, clicks, x, y)
+        - duration_ms: 整段移动耗时(仅 mode="smooth" 生效)
+        - points: [[x, y], [x, y, duration_ms], ...]; 三元点的第三个数覆盖本点耗时
+        返回执行记录 {"count", "points", "gap_ms", "duration_ms"}。
+        """
+        mouse.move(x, y, mode=mode, duration_ms=duration_ms,
+                   points=points, gap_ms=gap_ms)
+        pts = [[p[0], p[1]] for p in points] if points else ([[x, y]] if x is not None else [])
+        log.info("move %s -> %s gap=%sms", mode, pts, gap_ms)
+        return {"count": len(pts), "points": pts, "gap_ms": gap_ms,
+                "duration_ms": duration_ms}
+
+    def click(self, x=None, y=None, button: str = "left", clicks: int = 1,
+              hold_ms: float = 0, interval_ms: float | None = None,
+              move_mode: str = "instant", points=None, gap_ms: float = 0) -> dict:
+        """点击。给 points 走序列; 给 x/y 先定位(move_mode=instant 瞬移 / smooth 平滑)再点; 都不给则原地点击。
+
+        - hold_ms: 按压时长(毫秒, 0~5000)
+        - interval_ms: 双击间隔(同一次点击内部); gap_ms: 序列相邻两点间歇(两者含义不同)
+        返回执行记录 {"count", "points", "gap_ms", "hold_ms", "button"}。
+        """
+        if move_mode not in ("instant", "smooth"):
+            raise ValueError(f"未知 move_mode: {move_mode} (可选 instant/smooth)")
+
+        if points is not None:
+            mouse.click(button=button, hold_ms=hold_ms, clicks=clicks,
+                        interval_ms=interval_ms, points=points, gap_ms=gap_ms)
+            pts = [[p[0], p[1]] for p in points]
+            log.info("click seq %s hold=%sms gap=%sms", pts, hold_ms, gap_ms)
+            return {"count": len(pts), "points": pts, "gap_ms": gap_ms,
+                    "hold_ms": hold_ms, "button": button}
+
+        at = None
+        if x is not None and y is not None:
+            if move_mode == "smooth":
+                mouse.move(x, y, mode="smooth")    # 移动与点击独立: 平滑段单独调用
+            else:
+                at = (x, y)                         # 旧行为: 点击内部瞬移
+        mouse.click(button=button, hold_ms=hold_ms, clicks=clicks,
+                    interval_ms=interval_ms, at=at, points=None)
+        log.info("click %s hold=%sms clicks=%d at=%s", button, hold_ms, clicks, at)
+        pts = [[x, y]] if at else []
+        return {"count": len(pts), "points": pts, "gap_ms": gap_ms,
+                "hold_ms": hold_ms, "button": button}
 
     def drag(self, x1, y1, x2, y2, duration_ms: float = 400):
         mouse.drag((x1, y1), (x2, y2), duration_ms)
