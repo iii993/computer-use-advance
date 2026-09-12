@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`[ ]`) syntax for tracking.
 
-**Goal:** 把 `input_engine` / `computer_core` 的输入控制重构为"移动与点击彻底解耦 + 点击可指定按压时长/按键种类(含侧键)/双击",并新增两条观察通道:10X 鼠标放大镜与 UIA 无障碍树文本观察。
+**Goal:** 把 `input_engine` / `computer_core` 的输入控制重构为"移动与点击彻底解耦 + 点击可指定按压时长/按键种类(含侧键)/双击",移动/点击均可按坐标序列批量执行并设置步间间隔,并新增两条观察通道:10X 鼠标放大镜(含"放大图像素 → 屏幕真实坐标"反算)与 UIA 无障碍树文本观察。
 
-**Architecture:** 输入层(`input_engine/`)只负责原语,不再隐含"移动+点击"的复合行为;`computer_core/service.py` 作为统一服务层适配新旧调用并保持向后兼容;观察能力拆成独立模块 `computer_core/observe.py`(放大镜,基于 Pillow)与 `computer_core/uia.py`(基于纯 ctypes 直调 Windows UI Automation,零第三方依赖),最后在 `computer_mcp/server.py` 暴露为 MCP 工具。
+**Architecture:** 输入层(`input_engine/`)只负责原语,不再隐含"移动+点击"的复合行为;`computer_core/service.py` 作为统一服务层适配新旧调用并保持向后兼容;观察能力拆成独立模块 `computer_core/observe.py`(放大镜,基于 Pillow)与 `computer_core/uia.py`(基于纯 ctypes 直调 Windows UI Automation,零第三方依赖),最后在 `computer_mcp/server.py` 暴露为 MCP 工具。输入层与服务层同时支持"坐标序列 + 步间间隔"的批量执行;放大镜在 `observe.py` 内保存最近一次观察的坐标映射,供反算复用。
 
 **Tech Stack:** Python 3.14.3 / pynput 1.8.2 / Pillow 12.3.0 / 纯 ctypes (UIAutomationCore.dll) / MCP stdio (JSON-RPC)
 
@@ -36,11 +36,12 @@
 | `ai_mode/controller.py` | AI 指挥官 v2:批量动作 + 3 轮截图滑动窗口 + 识图检测 + 解析容错 | `SYSTEM_PROMPT` 的动作用例是兼容性契约 |
 | `config.json` | `mouse.move_steps=24`、`move_interval_ms=5`、`jitter_px=1.2`、`accel_curve=true`;`work.typing.*`;`ai.*` | 新增参数需带默认值,缺省合并由 `utils/config.py` 负责 |
 
-### 1.2 本次要解决的三个问题
+### 1.2 本次要解决的四个问题
 
 1. **移动与点击耦合**:AI 无法"先移动到目标 → 截图确认 → 再点击"。现有 `click` 一步做完,期间画面可能已变。
 2. **点击能力单一**:只有 `clicks=1/2` 和 `left/right/middle`。缺按压时长(长按/拖住)、侧键(X1/X2)、可控双击间隔。
 3. **观察通道单一**:只有全屏截图。缺"看清小目标"的能力(放大镜),也缺"精确知道有哪些窗口/控件"的能力(UIA 文本)。
+4. **批量执行与坐标反算缺失**:`move`/`click` 一次只能处理一个坐标,要让鼠标依次走过/点过一串位置,模型只能反复往返(慢且耗 token),也没有"步间间隔"可调;放大镜虽然给了放大图,却没有把**放大图里的像素**换算回**屏幕真实坐标**的手段,模型看完细节仍然点不准。
 
 ---
 
@@ -64,12 +65,21 @@ HOLD_MS_MAX = 5000               # 单次按压上限,防模型给超大值卡�
 DOUBLE_CLICK_INTERVAL_MS = 80    # 双击两次 down/up 的间隔
 
 
-def move(x, y, mode="smooth", duration_ms=None, cfg=None):
-    """只移动,不点击。mode='smooth'(插值+抖动+加速) | 'instant'(瞬移)。"""
+def move(x=None, y=None, mode="smooth", duration_ms=None,
+         points=None, gap_ms=0, cfg=None):
+    """只移动,不点击。
+    mode='smooth'(插值+抖动+加速) | 'instant'(瞬移)。
+    单点: move(100, 200, mode="smooth", duration_ms=500)
+    序列: move(points=[[100, 200], [300, 400, 300]], gap_ms=120)
+    """
 
 
-def click(button="left", hold_ms=0, clicks=1, interval_ms=None, at=None, cfg=None):
-    """只点击。at=(x,y) 给了就先移动(默认瞬移,保持旧行为)。"""
+def click(button="left", hold_ms=0, clicks=1, interval_ms=None, at=None,
+          points=None, gap_ms=0, cfg=None):
+    """只点击(给了 at / points 才会先移动)。
+    单点: click(x=100, y=200, hold_ms=120)        # at 形式: 先瞬移再点
+    序列: click(points=[[100, 200], [300, 400, 60]], button="left", gap_ms=200)
+    """
 ```
 
 行为定义:
@@ -80,6 +90,28 @@ def click(button="left", hold_ms=0, clicks=1, interval_ms=None, at=None, cfg=Non
 - `clicks>1` 时两次点击之间 `sleep(interval_ms/1000)`,`interval_ms` 默认 `DOUBLE_CLICK_INTERVAL_MS`。
 - 未知 `button` 抛 `ValueError`,错误信息里列出全部合法值。
 
+**四个"时间/间隔"参数含义互不重叠(命名规则,勿混):**
+
+| 参数 | 作用域 | 默认 | 说明 |
+|---|---|---|---|
+| `duration_ms` | move 的**单次移动** | `None`(退回 config 的 `move_steps × move_interval_ms`) | 整段移动耗时;仅 `mode="smooth"` 生效,`instant` 忽略 |
+| `hold_ms` | click 的**单次按压** | `0` | `press → sleep(hold_ms) → release`;0 表示走 `mc.click()` 快速点击 |
+| `interval_ms` | click **内部**多次 down/up | `80`(`DOUBLE_CLICK_INTERVAL_MS`) | 即双击间隔,只在 `clicks>1` 时生效,**与序列无关** |
+| `gap_ms` | **序列相邻两点之间** | `0` | 只在 `points` 模式生效;`move`/`click` 同名同义 |
+
+> `interval_ms`(点击内部)与 `gap_ms`(序列之间)是两个不同的东西,故意不同名,避免"双击间隔"和"步间间隔"互相污染。
+
+**坐标序列(`points`)规则:**
+
+- `points` 与 `x`/`y`/`at` **互斥**(同时给抛 `ValueError`);都不给时:move 抛 `ValueError`(没有目标),click 表示"原地点击当前位置"(保持旧的原地点击语义)。
+- 每个元素是 `[x, y]` 两元或 `[x, y, t]` 三元;三元时第三个数**覆盖本点**的 `duration_ms`(move)/ `hold_ms`(click),两元时用函数级参数。这与项目里 `draw_pressure_curve` 的"三维点 `[x, y, 压力]`"约定同构(第三位 = 本点强度/时长)。
+- 校验:元素个数为 0、元素长度不是 2/3、元素含非数字、`gap_ms < 0`、三元点的时间值越界(move 为负 / click 超出 `HOLD_MS_MAX`)一律抛 `ValueError`(与 `hold_ms` 越界的处理风格一致,不静默夹取)。
+- 执行节奏:点1 → `sleep(gap_ms)` → 点2 → ……;最后一个点之后**不**额外 sleep。
+- `points` 与 `clicks` 可组合:序列模式下每个点都按 `clicks` 次点击(常规场景保持 `clicks=1`)。
+- 返回值:输入层仍返回 `None`(原语风格);**服务层**返回执行记录 `{"count": n, "points": [[sx, sy], ...], "gap_ms": g, "duration_ms": d}`,便于模型核对"我到底走了哪些点"。
+
+**保持简单(向后兼容底线):** `move(100, 200)` / `move(100, 200, duration_ms=500)` / `click(100, 200)` / `click(100, 200, button="right", clicks=2)` 全部照旧;序列只是可选语法糖,不传 `points` 时新旧行为完全一致。
+
 > **双击语义说明**:Windows 判定双击依赖 `GetDoubleClickTime()`(默认 500ms)。本实现固定 80ms 间隔,**远小于系统阈值**,因此系统会识别为双击。这一点写进工具描述,避免模型猜。
 
 ### 2.2 服务层适配(`computer_core/service.py`)
@@ -87,14 +119,25 @@ def click(button="left", hold_ms=0, clicks=1, interval_ms=None, at=None, cfg=Non
 `ComputerService.click` 保持旧签名可用,新增可选参数:
 
 ```python
+def move(self, x=None, y=None, mode="smooth", duration_ms=None,
+         points=None, gap_ms=0) -> dict:
+    """只移动, 不点击。单点或坐标序列(见 2.1)。返回执行记录。"""
+
+
 def click(self, x=None, y=None, button="left", clicks=1,
-          hold_ms=0, interval_ms=None, move_mode="instant"):
-    """at 语义: x/y 都给则先移动(默认瞬移);都不给则原地点击。"""
+          hold_ms=0, interval_ms=None, move_mode="instant",
+          points=None, gap_ms=0) -> dict:
+    """at 语义: x/y 都给则先移动(默认瞬移);都不给则原地点击。
+    points 给了则按序列执行(与 x/y 互斥)。返回执行记录。"""
 ```
 
-新增薄封装:`move(x, y, mode="smooth")`、`zoom(...)`(见 2.3)、`describe_windows()`(见 2.4)。
+- **移动与点击彻底独立**:`click` 不带坐标时**不做任何移动**;`move` **永不点击**。要"移过去再点"有三种写法——① 两步 `move(...)` → (可选截图确认) → `click(...)`,这是推荐给 AI 的写法(中间可以观察);② 一次 `click(x, y)`(内部瞬移,仅为兼容旧调用保留);③ 一次 `click(x, y, move_mode="smooth")`(先平滑移动再点,等价于 ① 但没有观察间隙)。
+- `move` 的 `duration_ms` 与 `click` 的 `hold_ms` 就是两者各自的"执行时间",都可单点设置或按点覆盖(`[x, y, t]` 三元)。
+- 序列模式下服务层统一走 `input_engine.mouse` 的同一套校验,服务层不再重复实现节奏控制。
 
-**兼容验证点**:现有调用 `svc.click(x, y, button="right", clicks=2)` 必须行为不变(先瞬移再双击)。
+新增薄封装:`zoom_tool(x, y, factor, src)`(见 2.3;供 MCP 用,返回 `(jpeg_bytes, meta)` 并把 meta 记为"最近一次观察")、`zoom_to_screen(px, py)`(见 2.3.1)、`describe_windows()`(见 2.4)。
+
+**兼容验证点**:现有调用 `svc.click(x, y, button="right", clicks=2)` 必须行为不变(先瞬移再双击);`svc.click()` 仍为原地点击。
 
 ### 2.3 放大镜观察工具(默认 10X)
 
@@ -119,13 +162,62 @@ def zoom(x=None, y=None, factor=10, src=100, quality=85, max_out=1200):
   "factor": 10,                                 # 实际生效倍率(可能被 max_out 下调)
   "src_size": [w, h],                           # 原始区域尺寸
   "out_size": [out_w, out_h],                   # 返回图尺寸
-  "to_screen": "screen_x = screen_rect[0] + px/factor"
+  "cursor": [x, y],                             # 观察中心的屏幕坐标
+  "seq": 3,                                     # 本次观察序号(自增), 反算时原样回带, 便于核对用的是哪张图
+  "to_screen": "screen_x = screen_rect[0] + px/factor",
+  "from_screen": "px = (screen_x - screen_rect[0]) * factor"
 }
 ```
 
 否则模型拿放大图里的像素坐标直接去点击,必然全错。
 
 边界处理:`bbox` 超出屏幕时要夹取到屏幕内(多屏用 `all_screens=True`),并把**夹取后的**真实矩形写进 `screen_rect`。
+
+### 2.3.1 反算:放大图像素 → 屏幕真实坐标
+
+**动机**:模型看着放大图说"我要点这条线左边第二格",它只会得到**放大图里的像素**。没有反算,模型只能靠心算 `screen_rect[0] + px/factor`,一步算错就点飞。
+
+**接口(服务端记住最近一次 zoom,模型只传两个数):**
+
+```python
+# computer_core/observe.py
+_LAST = None          # 最近一次成功的 zoom: {"meta": dict, "img": PIL.Image | None}; 配一个模块级 _LOCK
+
+def px_to_screen(px, py, meta=None) -> tuple[int, int]:
+    """放大图像素 → 屏幕物理像素。meta 为 None 时用最近一次 zoom 的 meta。
+    纯函数(给定 meta 时), 便于单测。
+    """
+
+def last_meta() -> dict | None:
+    """最近一次 zoom 的 meta; 没 zoom 过返回 None。"""
+```
+
+```python
+# computer_core/service.py
+def zoom_to_screen(self, px, py) -> dict:
+    """用最近一次 zoom 的映射反算。返回 {"screen_x":.., "screen_y":.., "seq":.., "factor":..}"""
+```
+
+**语义与校验(必须按此实现,避免模型算错还拿到一个"看似有效"的数):**
+
+1. 公式:`screen_x = screen_rect[0] + px // factor`,`screen_y = screen_rect[1] + py // factor`。**整除**而非浮点,因为倍率是整数、`Image.NEAREST` 下放大图里 `factor×factor` 个像素对应屏幕 1 像素。
+2. 合法像素(`0 ≤ px < out_size[0]`、`0 ≤ py < out_size[1]`)的整除结果必然落在 `screen_rect` 内;实现里仍做一次 `min` 夹取兜底,防止将来改倍率算法后越界。
+3. `px`/`py` 超出 `out_size` → 抛 `ValueError`,错误信息带上真实的 `out_size`(让模型知道它读错图了),**不静默夹取**。
+4. 没有任何 zoom 记录 → 抛 `RuntimeError("还没有 zoom 记录, 请先调用 zoom")` —— 不返回猜测值。
+5. 返回值回带 `seq`,与 meta 的 `seq` 对照,模型可自检"我看的是哪张图"。
+6. 线程安全:zoom 的写入与反算的读取共用一个 `threading.Lock`(MCP 单线程也会被 AI 任务窗口并发调用)。
+7. **反算不重新截屏、不重新 zoom**,因此它只对"最近一次 zoom 之后画面没有变化"的情形有效;工具描述里要写明这一点(画面变了要重新 zoom)。
+
+**"看准再点"闭环(写进工具描述与 AI 动作表):**
+
+```text
+screenshot            → 全屏粗定位(截图内像素)
+zoom(x, y, factor=10) → 放大目标附近, 得到放大图 + meta(screen_rect/factor)
+zoom_to_screen(px,py) → 放大图里的(px,py) → 屏幕真实坐标
+click(x, y)           → 用上一步得到的屏幕坐标点击(注意: click 用屏幕坐标, 不是截图内像素)
+```
+
+> 坐标口径提醒:`screenshot` 走"截图内像素"(server 侧换算),`zoom`/`zoom_to_screen` 走"屏幕物理像素"。两者不同,文档与工具描述都要显式标注,否则模型必然混用。
 
 ### 2.4 UIA 文本观察通道(`computer_core/uia.py`)
 
@@ -290,14 +382,17 @@ pynput 导入 OK: ['unknown', 'left', 'middle', 'right', 'x1', 'x2']
 3. **坐标映射必须回传**。放大图像素 ≠ 屏幕像素,不回传 `screen_rect` 和 `factor` 的话,模型必然点错。
 4. **`hold_ms` 是阻塞调用**。`press → sleep → release` 卡住线程,必须有 `HOLD_MS_MAX = 5000` 上限,否则模型传 999999 就把 AI 任务冻死。
 5. **双击间隔**。真双击要求两次 down/up 间隔 < `GetDoubleClickTime()`(默认 500ms)。现有 `for _ in range(clicks): mc.click(...)` 间隔取决于执行速度、不可控。
+6. **反算是"最近一次 zoom"的状态,不是纯数学**。放大图与屏幕的映射每次都不一样;反算接口必须绑定最近一次的 meta,并在没有记录时**明确报错**,否则模型会拿旧的 factor 算出一个偏得很远的坐标还以为成功。超界像素同样要报错而不是夹取。
+7. **`gap_ms` 与 `interval_ms` 绝不能合并**。序列的"点与点之间"和双击的"两次 down/up 之间"语义不同,合成一个参数后"点一下 → 等 300ms → 点下一个"与"双击"就会互相污染。
+8. **序列的中间失败**。序列执行到第 k 个点时若抛异常(例如坐标非法),已经执行的 k-1 个点不回滚;错误信息必须带上"已完成 k-1 个,第 k 个参数是 ...",否则模型无法判断鼠标现在停在哪。
 
 ---
 
 ## 4. 任务分解
 
-> 项目当前**没有测试基础设施**。为避免新增依赖,测试统一用标准库 `unittest`,放 `tests/`,用 `python -m unittest` 运行。只对**纯函数**(坐标换算、参数校验、映射表)写单元测试;真实鼠标/键盘行为用人工验证步骤。
+> 项目当前**没有测试基础设施**。为避免新增依赖,测试统一用标准库 `unittest`,放 `tests/`,用 `python -m unittest` 运行。只对**纯函数**(坐标换算、参数校验、映射表)写单元测试;序列的 `sleep` 节奏用 `mock` 断言调用次数与参数(不真的等待);真实鼠标/键盘行为用人工验证步骤。
 
-### Task 1: 输入层原语(移动与点击解耦)
+### Task 1: 输入层原语(移动与点击解耦 + 执行时间 + 坐标序列)
 
 **Files:**
 - Modify: `input_engine/mouse.py`
@@ -309,14 +404,17 @@ pynput 导入 OK: ['unknown', 'left', 'middle', 'right', 'x1', 'x2']
   - `BUTTONS: dict[str, pynput.mouse.Button]`
   - `HOLD_MS_MAX: int = 5000`
   - `DOUBLE_CLICK_INTERVAL_MS: int = 80`
-  - `move(x, y, mode="smooth", duration_ms=None, cfg=None) -> None`
-  - `click(button="left", hold_ms=0, clicks=1, interval_ms=None, at=None, cfg=None) -> None`
+  - `GAP_MS_DEFAULT: int = 0`
+  - `normalize_points(points, default_t) -> list[tuple[float, float, float]]`(纯函数, 序列校验/解包)
+  - `move(x=None, y=None, mode="smooth", duration_ms=None, points=None, gap_ms=0, cfg=None) -> None`
+  - `click(button="left", hold_ms=0, clicks=1, interval_ms=None, at=None, points=None, gap_ms=0, cfg=None) -> None`
 
 - [ ] **Step 1: 写失败测试**(纯函数部分,不碰真实鼠标)
 
 ```python
 # tests/test_mouse_input.py
 import sys, os, unittest
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vendor"))
 
@@ -343,6 +441,92 @@ class TestButtonMap(unittest.TestCase):
             mouse.click(button="left", hold_ms=-1)
 
 
+class TestMoveClickAreIndependent(unittest.TestCase):
+    """移动与点击彻底独立: move 不点击, click 不带坐标不移动。"""
+
+    def test_move_never_clicks(self):
+        with mock.patch.object(mouse, "mc") as m, mock.patch.object(mouse, "move_to") as mt:
+            mouse.move(10, 20)
+            self.assertEqual(m.click.call_count, 0)
+            mt.assert_called_once()
+
+    def test_bare_click_does_not_move(self):
+        with mock.patch.object(mouse, "mc") as m, mock.patch.object(mouse, "move_to") as mt:
+            mouse.click(button="left")
+            m.click.assert_called_once()
+            mt.assert_not_called()          # 桩 mc 不会被真的设位置, 只看没有移动调用
+
+    def test_click_at_positioning_keeps_legacy_instant_behavior(self):
+        with mock.patch.object(mouse, "mc") as m, mock.patch.object(mouse, "move_to") as mt:
+            mouse.click(at=(100, 200))
+            mt.assert_not_called()               # 旧行为是瞬移, 不是平滑移动
+            self.assertEqual(m.click.call_count, 1)
+
+
+class TestPointSequenceValidation(unittest.TestCase):
+    def test_points_and_xy_are_mutually_exclusive(self):
+        with self.assertRaises(ValueError):
+            mouse.move(100, 200, points=[[1, 2]])
+        with self.assertRaises(ValueError):
+            mouse.click(x=100, y=200, points=[[1, 2]])
+        with self.assertRaises(ValueError):
+            mouse.click(at=(1, 2), points=[[1, 2]])
+
+    def test_empty_points_raises(self):
+        for f in (lambda: mouse.move(points=[]), lambda: mouse.click(points=[])):
+            with self.assertRaises(ValueError):
+                f()
+
+    def test_bad_point_shape_or_type_raises(self):
+        for bad in ([[1]], [[1, 2, 3, 4]], [["a", "b"]], [None], "1,2"):
+            with self.assertRaises(ValueError):
+                mouse.move(points=bad)
+
+    def test_missing_target_raises(self):
+        with self.assertRaises(ValueError):
+            mouse.move()                          # 既没有 x/y 也没有 points
+
+    def test_gap_ms_negative_raises(self):
+        with self.assertRaises(ValueError):
+            mouse.move(points=[[1, 2]], gap_ms=-1)
+        with self.assertRaises(ValueError):
+            mouse.click(points=[[1, 2]], gap_ms=-1)
+
+    def test_per_point_time_out_of_range_raises(self):
+        with self.assertRaises(ValueError):
+            mouse.click(points=[[1, 2, mouse.HOLD_MS_MAX + 1]])
+        with self.assertRaises(ValueError):
+            mouse.move(points=[[1, 2, -50]])
+
+    def test_normalize_points_defaults(self):
+        self.assertEqual(mouse.normalize_points([[1, 2], [3, 4, 500]], 300),
+                         [(1.0, 2.0, 300.0), (3.0, 4.0, 500.0)])
+
+
+class TestSequenceExecution(unittest.TestCase):
+    """用桩替换 mc / time.sleep, 验证序列按顺序走完且只在点与点之间等待。"""
+
+    def test_click_sequence_order_and_single_gap(self):
+        with mock.patch.object(mouse, "mc") as m, mock.patch.object(mouse.time, "sleep") as s:
+            mouse.click(points=[[10, 20], [30, 40], [50, 60]], gap_ms=200)
+        self.assertEqual(m.click.call_count, 3)
+        self.assertEqual(s.call_count, 2)                       # 3 个点 -> 2 个间歇
+        self.assertEqual(s.call_args_list[0].args[0], 0.2)
+
+    def test_move_sequence_uses_per_point_duration(self):
+        seen = []
+        with mock.patch.object(mouse, "move_to",
+                               side_effect=lambda x, y, cfg, d: seen.append(d)), \
+             mock.patch.object(mouse.time, "sleep"):
+            mouse.move(points=[[1, 1, 111], [2, 2]], duration_ms=222, gap_ms=50)
+        self.assertEqual(seen, [111, 222])                      # 三元覆盖, 两元用函数级值
+
+    def test_single_point_path_unchanged(self):
+        with mock.patch.object(mouse, "move_to") as mt:
+            mouse.move(7, 8, duration_ms=99)
+            mt.assert_called_once_with(7, 8, None, 99)
+
+
 if __name__ == "__main__":
     unittest.main()
 ```
@@ -365,25 +549,70 @@ BUTTONS = {
     "x2": Button.x2,
 }
 
-HOLD_MS_MAX = 5000
-DOUBLE_CLICK_INTERVAL_MS = 80
+HOLD_MS_MAX = 5000                 # 单次按压上限
+DOUBLE_CLICK_INTERVAL_MS = 80      # 同一次点击内部多次 down/up 的间隔
+GAP_MS_DEFAULT = 0                 # 序列相邻两点之间的间歇
 
 
-def move(x: float, y: float, mode: str = "smooth",
-         duration_ms: float | None = None, cfg: dict | None = None) -> None:
-    """只移动,不点击。mode='smooth' 插值+抖动+加速; 'instant' 瞬移。"""
+def normalize_points(points, default_t: float) -> list[tuple[float, float, float]]:
+    """把 [[x,y], [x,y,t], ...] 规范成 [(x, y, t), ...]; 非法输入抛 ValueError。"""
+    if not isinstance(points, (list, tuple)) or len(points) == 0:
+        raise ValueError("points 必须是非空列表, 元素形如 [x, y] 或 [x, y, t]")
+    out = []
+    for i, p in enumerate(points):
+        if not isinstance(p, (list, tuple)) or len(p) not in (2, 3):
+            raise ValueError(f"points[{i}] 必须是 [x, y] 或 [x, y, t], 收到 {p!r}")
+        try:
+            px, py = float(p[0]), float(p[1])
+            pt = float(p[2]) if len(p) == 3 else float(default_t)
+        except (TypeError, ValueError):
+            raise ValueError(f"points[{i}] 含非数字: {p!r}")
+        out.append((px, py, pt))
+    return out
+
+
+def move(x: float | None = None, y: float | None = None, mode: str = "smooth",
+         duration_ms: float | None = None, points: list | None = None,
+         gap_ms: float = GAP_MS_DEFAULT, cfg: dict | None = None) -> None:
+    """只移动, 不点击。mode='smooth' 插值+抖动+加速; 'instant' 瞬移。
+    单点: move(100, 200, duration_ms=500)
+    序列: move(points=[[100, 200], [300, 400, 300]], gap_ms=120)
+    """
+    if mode not in ("smooth", "instant"):
+        raise ValueError(f"未知 move mode: {mode} (可选 smooth/instant)")
+    if gap_ms < 0:
+        raise ValueError(f"gap_ms 必须 >= 0, 收到 {gap_ms}")
+
+    if points is not None:
+        if x is not None or y is not None:
+            raise ValueError("points 与 x/y 互斥, 只能给一个")
+        seq = normalize_points(points, duration_ms if duration_ms is not None else 0)
+        for i, (px, py, pt) in enumerate(seq):
+            if pt < 0:
+                raise ValueError(f"points[{i}] 的时间必须 >= 0, 收到 {pt}")
+            move(px, py, mode=mode, duration_ms=(pt or None), cfg=cfg)
+            if i < len(seq) - 1 and gap_ms:
+                time.sleep(gap_ms / 1000.0)
+        return
+
+    if x is None or y is None:
+        raise ValueError("move 需要 x/y(单点) 或 points(序列) 其中之一")
+
     if mode == "instant":
         mc.position = (x, y)
         return
-    if mode != "smooth":
-        raise ValueError(f"未知 move mode: {mode} (可选 smooth/instant)")
     move_to(x, y, cfg, duration_ms)
 
 
 def click(button: str = "left", hold_ms: float = 0, clicks: int = 1,
           interval_ms: float | None = None, at: tuple | None = None,
+          points: list | None = None, gap_ms: float = GAP_MS_DEFAULT,
           cfg: dict | None = None) -> None:
-    """只点击(除非给了 at)。hold_ms 为按压时长(毫秒), 上限 HOLD_MS_MAX。"""
+    """只点击(除非给了 at / points)。hold_ms 为按压时长(毫秒), 上限 HOLD_MS_MAX。
+    单点: click(x=100, y=200, hold_ms=120)
+    序列: click(points=[[100, 200], [300, 400, 60]], button="left", gap_ms=200)
+    注意: interval_ms 是双击间隔, gap_ms 是序列步间间隔, 不要混用。
+    """
     btn = BUTTONS.get(button)
     if btn is None:
         raise ValueError(f"未知按键: {button} (可选 {sorted(BUTTONS)})")
@@ -391,6 +620,22 @@ def click(button: str = "left", hold_ms: float = 0, clicks: int = 1,
         raise ValueError(f"hold_ms 必须在 0~{HOLD_MS_MAX} 之间, 收到 {hold_ms}")
     if clicks < 1:
         raise ValueError(f"clicks 必须 >= 1, 收到 {clicks}")
+    if gap_ms < 0:
+        raise ValueError(f"gap_ms 必须 >= 0, 收到 {gap_ms}")
+
+    if points is not None:
+        if at is not None:
+            raise ValueError("points 与 at 互斥, 只能给一个")
+        seq = normalize_points(points, hold_ms)
+        for i, (px, py, ph) in enumerate(seq):
+            if ph < 0 or ph > HOLD_MS_MAX:
+                raise ValueError(f"points[{i}] 的按压时长必须在 0~{HOLD_MS_MAX} 之间, 收到 {ph}")
+            click(button=button, hold_ms=ph, clicks=clicks,
+                  interval_ms=interval_ms, at=(px, py), cfg=cfg)
+            if i < len(seq) - 1 and gap_ms:
+                time.sleep(gap_ms / 1000.0)
+        return
+
     if interval_ms is None:
         interval_ms = DOUBLE_CLICK_INTERVAL_MS
 
@@ -411,7 +656,7 @@ def click(button: str = "left", hold_ms: float = 0, clicks: int = 1,
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `python -m unittest tests.test_mouse_input -v`
-Expected: PASS (4 tests)
+Expected: PASS (17 tests) —— 4 个原有 + 移动/点击独立性 3 + 序列校验 7 + 序列执行节奏 3
 
 > 沙箱提示:此步需要 DSH 提权到 `danger-full-access`(见 §3.9)。
 
@@ -422,11 +667,18 @@ python -c "import sys; sys.path[:0]=[r'H:\cu-a',r'H:\cu-a\vendor']; from input_e
 ```
 Expected: 浏览器/资源管理器中触发"后退"。
 
+再验证"执行时间 + 序列 + 步间间隔"(先在屏幕上打开画图/白板,让它画出 Z 字形):
+
+```bash
+python -c "import sys; sys.path[:0]=[r'H:\cu-a',r'H:\cu-a\vendor']; from input_engine import mouse; import time; time.sleep(2); mouse.move(points=[[400,300],[800,300],[400,600],[800,600]], duration_ms=400, gap_ms=300); mouse.click(points=[[400,700],[800,700]], hold_ms=150, gap_ms=500); print('OK')"
+```
+Expected: 鼠标平滑走过 4 个点(每段约 400ms,段间停 300ms),再在两个位置各长按 150ms 点击一次。
+
 - [ ] **Step 6: 提交**
 
 ```bash
 git add input_engine/mouse.py tests/test_mouse_input.py
-git commit -m "重构:鼠标输入层移动与点击解耦, 点击支持按压时长/侧键/双击间隔"
+git commit -m "重构:鼠标输入层移动与点击彻底独立, 支持按压时长/侧键/双击间隔与带步间间隔的坐标序列"
 ```
 
 ### Task 2: 服务层适配与向后兼容
@@ -437,7 +689,10 @@ git commit -m "重构:鼠标输入层移动与点击解耦, 点击支持按压�
 
 **Interfaces:**
 - Consumes: Task 1 的 `mouse.move()` / `mouse.click()`
-- Produces: `ComputerService.click(x=None, y=None, button="left", clicks=1, hold_ms=0, interval_ms=None, move_mode="instant")` 与 `ComputerService.move(x, y, mode="smooth")`
+- Produces:
+  - `ComputerService.move(x=None, y=None, mode="smooth", duration_ms=None, points=None, gap_ms=0) -> dict`
+  - `ComputerService.click(x=None, y=None, button="left", clicks=1, hold_ms=0, interval_ms=None, move_mode="instant", points=None, gap_ms=0) -> dict`
+  - 两者的返回值都是执行记录 `{"count": n, "points": [[sx, sy], ...], "gap_ms": g, "duration_ms"/"hold_ms": t}`
 
 - [ ] **Step 1: 写失败测试**(用桩替换真实鼠标,验证参数转发)
 
@@ -473,6 +728,50 @@ class TestServiceClick(unittest.TestCase):
             self.assertIsNone(m.call_args.kwargs["at"])
 
 
+class TestServiceMoveAndSequence(unittest.TestCase):
+    def _svc(self):
+        return service.ComputerService(config={"ai": {}, "draw": {}})
+
+    def test_move_forwards_duration(self):
+        svc = self._svc()
+        with mock.patch.object(service.mouse, "move") as m:
+            rec = svc.move(10, 20, mode="smooth", duration_ms=500)
+            m.assert_called_once()
+            self.assertEqual(m.call_args.kwargs["duration_ms"], 500)
+            self.assertEqual(rec["count"], 1)
+
+    def test_move_sequence_forwards_points_and_gap(self):
+        svc = self._svc()
+        with mock.patch.object(service.mouse, "move") as m:
+            rec = svc.move(points=[[1, 2], [3, 4]], gap_ms=150)
+            self.assertEqual(m.call_args.kwargs["points"], [[1, 2], [3, 4]])
+            self.assertEqual(m.call_args.kwargs["gap_ms"], 150)
+            self.assertEqual(rec["gap_ms"], 150)
+
+    def test_click_sequence_returns_record(self):
+        svc = self._svc()
+        with mock.patch.object(service.mouse, "click") as m:
+            rec = svc.click(points=[[5, 6], [7, 8]], hold_ms=120, gap_ms=200)
+            self.assertEqual(m.call_args.kwargs["points"], [[5, 6], [7, 8]])
+            self.assertEqual(m.call_args.kwargs["hold_ms"], 120)
+            self.assertEqual(rec["count"], 2)
+
+    def test_click_without_coords_still_does_not_move(self):
+        svc = self._svc()
+        with mock.patch.object(service.mouse, "click") as m:
+            svc.click(button="left")
+            self.assertIsNone(m.call_args.kwargs["at"])
+            self.assertIsNone(m.call_args.kwargs["points"])
+
+    def test_click_smooth_mode_moves_before_clicking(self):
+        svc = self._svc()
+        with mock.patch.object(service.mouse, "move") as mm, \
+             mock.patch.object(service.mouse, "click") as mc:
+            svc.click(10, 20, move_mode="smooth")
+            mm.assert_called_once()
+            self.assertIsNone(mc.call_args.kwargs["at"])   # 已单独移动, 点击不再定位
+
+
 if __name__ == "__main__":
     unittest.main()
 ```
@@ -485,26 +784,50 @@ Expected: FAIL — `TypeError: click() got an unexpected keyword argument 'hold_
 - [ ] **Step 3: 实现**
 
 ```python
+def move(self, x=None, y=None, mode: str = "smooth", duration_ms=None,
+         points=None, gap_ms: float = 0) -> dict:
+    """只移动, 不点击。单点(x/y)或序列(points)二选一, gap_ms 为序列步间间隔。"""
+    mouse.move(x, y, mode=mode, duration_ms=duration_ms,
+               points=points, gap_ms=gap_ms)
+    pts = [[p[0], p[1]] for p in points] if points else ([[x, y]] if x is not None else [])
+    log.info("move %s -> %s gap=%sms", mode, pts, gap_ms)
+    return {"count": len(pts), "points": pts, "gap_ms": gap_ms,
+            "duration_ms": duration_ms}
+
+
 def click(self, x=None, y=None, button: str = "left", clicks: int = 1,
           hold_ms: float = 0, interval_ms: float | None = None,
-          move_mode: str = "instant"):
-    """点击。x/y 都给则先移动(默认瞬移), 否则原地点击。"""
-    at = (x, y) if (x is not None and y is not None) else None
+          move_mode: str = "instant", points=None, gap_ms: float = 0) -> dict:
+    """点击。给了 points 走序列; 给了 x/y 先定位(move_mode=instant 瞬移/smooth 平滑)再点; 都不给则原地点击。"""
+    if move_mode not in ("instant", "smooth"):
+        raise ValueError(f"未知 move_mode: {move_mode} (可选 instant/smooth)")
+
+    if points is not None:
+        mouse.click(button=button, hold_ms=hold_ms, clicks=clicks,
+                    interval_ms=interval_ms, points=points, gap_ms=gap_ms)
+        pts = [[p[0], p[1]] for p in points]
+        log.info("click seq %s hold=%sms gap=%sms", pts, hold_ms, gap_ms)
+        return {"count": len(pts), "points": pts, "gap_ms": gap_ms,
+                "hold_ms": hold_ms, "button": button}
+
+    at = None
+    if x is not None and y is not None:
+        if move_mode == "smooth":
+            mouse.move(x, y, mode="smooth")     # 移动与点击独立: 平滑段单独调用
+        else:
+            at = (x, y)                          # 旧行为: 点击内部瞬移
     mouse.click(button=button, hold_ms=hold_ms, clicks=clicks,
                 interval_ms=interval_ms, at=at)
     log.info("click %s hold=%sms clicks=%d at=%s", button, hold_ms, clicks, at)
-
-
-def move(self, x: float, y: float, mode: str = "smooth"):
-    """只移动, 不点击。mode='smooth'|'instant'。"""
-    mouse.move(x, y, mode=mode)
-    log.info("move %s -> (%.0f, %.0f)", mode, x, y)
+    pts = [[x, y]] if at else []
+    return {"count": len(pts), "points": pts, "gap_ms": gap_ms,
+            "hold_ms": hold_ms, "button": button}
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `python -m unittest tests.test_service_click -v`
-Expected: PASS (2 tests)
+Expected: PASS (7 tests) —— 2 个旧用例(参数转发/不带坐标不移动) + 5 个新用例(独立 move / 序列转发 / 序列记录 / 原地点击不变 / smooth 先移动)
 
 - [ ] **Step 5: 回归验证旧调用路径**
 
@@ -518,14 +841,19 @@ git add computer_core/service.py tests/test_service_click.py
 git commit -m "重构:服务层点击支持按压时长/侧键/双击, 新增独立 move 接口"
 ```
 
-### Task 3: 放大镜观察工具
+### Task 3: 放大镜观察工具 + 像素反算
 
 **Files:**
 - Create: `computer_core/observe.py`
 - Test: `tests/test_observe_zoom.py` (新建)
 
 **Interfaces:**
-- Produces: `zoom(x=None, y=None, factor=10, src=100, quality=85, max_out=1200) -> (bytes, dict)`;`clamp_region(cx, cy, src, screen_size) -> tuple`;`effective_factor(src, factor, max_out) -> int`
+- Produces:
+  - `zoom(x=None, y=None, factor=10, src=100, quality=85, max_out=1200) -> (bytes, dict)`(成功即记住本次映射)
+  - `clamp_region(cx, cy, src, screen_size) -> tuple`;`effective_factor(src, factor, max_out) -> int`(纯函数)
+  - `px_to_screen(px, py, meta=None) -> tuple[int, int]`(**反算**,meta 省略用最近一次 zoom)
+  - `screen_to_px(sx, sy, meta) -> tuple[int, int]`(正向,用于往返自检)
+  - `last_meta() -> dict | None`;`_LAST`(最近一次 `{"meta", "img"}`);`_LOCK: threading.Lock`
 
 - [ ] **Step 1: 写失败测试**(只测纯函数)
 
@@ -561,6 +889,53 @@ class TestZoomFactorBudget(unittest.TestCase):
         self.assertEqual(observe.effective_factor(500, 10, 1200), 2)
 
 
+class TestPxToScreen(unittest.TestCase):
+    """反算: 放大图像素 -> 屏幕真实坐标(计划 §2.3.1)。"""
+
+    META = {"screen_rect": [450, 450, 550, 550], "factor": 10,
+            "src_size": [100, 100], "out_size": [1000, 1000], "seq": 1}
+
+    def test_origin_maps_to_rect_topleft(self):
+        self.assertEqual(observe.px_to_screen(0, 0, self.META), (450, 450))
+
+    def test_integer_division_by_factor(self):
+        # factor×factor 个放大像素 = 屏幕 1 像素
+        self.assertEqual(observe.px_to_screen(19, 20, self.META), (451, 452))
+
+    def test_last_pixel_stays_inside_rect(self):
+        self.assertEqual(observe.px_to_screen(999, 999, self.META), (549, 549))
+
+    def test_out_of_range_raises_with_range_in_message(self):
+        with self.assertRaises(ValueError) as ctx:
+            observe.px_to_screen(1000, 0, self.META)   # px == out_w 已越界
+        self.assertIn("1000x1000", str(ctx.exception))
+        with self.assertRaises(ValueError):
+            observe.px_to_screen(0, -1, self.META)
+
+    def test_non_numeric_raises(self):
+        with self.assertRaises(ValueError):
+            observe.px_to_screen("a", 0, self.META)
+
+    def test_no_zoom_record_raises(self):
+        observe._LAST = None
+        with self.assertRaises(RuntimeError):
+            observe.px_to_screen(0, 0, None)          # 没传 meta 且没有记录
+
+    def test_roundtrip_screen_to_px_to_screen(self):
+        for sx, sy in ((450, 450), (455, 462), (549, 549)):
+            px, py = observe.screen_to_px(sx, sy, self.META)
+            self.assertEqual(observe.px_to_screen(px, py, self.META), (sx, sy))
+
+    def test_remember_records_meta_and_increments_seq(self):
+        observe._LAST = None
+        observe._seq_counter = 0
+        observe._remember({"out_size": [10, 10], "factor": 1,
+                           "screen_rect": [0, 0, 10, 10]}, None)
+        observe._remember({"out_size": [10, 10], "factor": 1,
+                           "screen_rect": [0, 0, 10, 10]}, None)
+        self.assertEqual(observe.last_meta()["seq"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
 ```
@@ -573,10 +948,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'computer_core.observe'
 - [ ] **Step 3: 实现**
 
 ```python
-"""观察通道: 放大镜(zoom)。坐标系: 屏幕物理像素。"""
+"""观察通道: 放大镜(zoom) + 坐标反算(px_to_screen)。坐标系: 屏幕物理像素。"""
 import io
 import os
 import sys
+import threading
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _VENDOR = os.path.join(_BASE, "vendor")
@@ -629,28 +1005,95 @@ def zoom(x=None, y=None, factor=10, src=100, quality=85, max_out=1200):
         "src_size": [region.width, region.height],
         "out_size": [big.width, big.height],
         "cursor": [x, y],
-        "to_screen": "screen_x = screen_rect[0] + px/factor",
+        "to_screen": "screen_x = screen_rect[0] + px//factor",
+        "from_screen": "px = (screen_x - screen_rect[0]) * factor",
     }
+    _remember(meta, big)          # 记住最近一次映射, 供 px_to_screen 反算(见 §2.3.1)
     return buf.getvalue(), meta
+
+
+# ---- 反算: 放大图像素 -> 屏幕真实坐标(§2.3.1) ----
+
+_LAST = None                              # {"meta": dict, "img": PIL.Image} | None
+_seq_counter = 0                          # 观察序号, 回带给模型核对"看的是哪张图"
+_LOCK = threading.Lock()
+
+
+def _remember(meta: dict, img) -> dict:
+    """记下最近一次成功观察的映射(zoom 内部调用, 反算依赖它)。"""
+    global _LAST, _seq_counter
+    with _LOCK:
+        _seq_counter += 1
+        meta["seq"] = _seq_counter
+        _LAST = {"meta": meta, "img": img}
+    return meta
+
+
+def last_meta() -> dict | None:
+    """最近一次 zoom 的 meta; 没 zoom 过返回 None。"""
+    with _LOCK:
+        last = _LAST
+    return None if last is None else dict(last["meta"])
+
+
+def screen_to_px(sx, sy, meta) -> tuple[int, int]:
+    """屏幕坐标 -> 放大图像素(取该屏幕像素对应方块的中心), 用于往返自检。"""
+    f = meta["factor"]
+    left, top = meta["screen_rect"][0], meta["screen_rect"][1]
+    return (int((sx - left) * f + f // 2), int((sy - top) * f + f // 2))
+
+
+def px_to_screen(px, py, meta: dict | None = None) -> tuple[int, int]:
+    """放大图像素 -> 屏幕物理像素。meta=None 时用最近一次 zoom 的映射。
+
+    校验: 非整数/超界抛 ValueError(错误信息带真实 out_size); 没有 zoom 记录抛 RuntimeError。
+    """
+    if meta is None:
+        meta = last_meta()
+        if meta is None:
+            raise RuntimeError("还没有 zoom 记录, 请先调用 zoom")
+    try:
+        px, py = int(px), int(py)
+    except (TypeError, ValueError):
+        raise ValueError(f"px/py 必须是整数, 收到 {px!r}/{py!r}")
+
+    ow, oh = meta["out_size"]
+    if not (0 <= px < ow and 0 <= py < oh):
+        raise ValueError(
+            f"像素超出放大图范围: ({px}, {py}) 不在 {ow}x{oh} 内 —— 请确认读的是最近一次 zoom 的图")
+
+    f = meta["factor"]
+    left, top = meta["screen_rect"][0], meta["screen_rect"][1]
+    sx, sy = left + px // f, top + py // f
+    # 整除已保证落在 screen_rect 内, 这里只做最后一道夹取兜底
+    right, bottom = meta["screen_rect"][2] - 1, meta["screen_rect"][3] - 1
+    return (min(sx, right), min(sy, bottom))
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `python -m unittest tests.test_observe_zoom -v`
-Expected: PASS (5 tests)
+Expected: PASS (13 tests) —— 夹取 3 + 倍率预算 2 + 反算 8(含超界/无记录/往返一致/seq 自增)
 
 - [ ] **Step 5: 真实截图人工验证**
 
 ```bash
 python -c "import sys; sys.path[:0]=[r'H:\cu-a',r'H:\cu-a\vendor']; from computer_core.observe import zoom; b,m=zoom(factor=10); open(r'H:\cu-a\.tmp\zoom_check.jpg','wb').write(b); print(m)"
 ```
-Expected: 生成 `.tmp/zoom_check.jpg`,meta 里 `factor=10`、`screen_rect` 为 100×100 的屏幕矩形。打开图片确认**无插值模糊**(细线边缘是硬边)。
+Expected: 生成 `.tmp/zoom_check.jpg`,meta 里 `factor=10`、`screen_rect` 为 100×100 的屏幕矩形、`seq=1`。打开图片确认**无插值模糊**(细线边缘是硬边)。
+
+再验证反算(不传 meta,走"最近一次 zoom"):
+
+```bash
+python -c "import sys; sys.path[:0]=[r'H:\cu-a',r'H:\cu-a\vendor']; from computer_core.observe import zoom, px_to_screen, screen_to_px; b,m=zoom(factor=10); print('seq', m['seq']); print('图中心 ->', px_to_screen(m['out_size'][0]//2, m['out_size'][1]//2)); print('往返', px_to_screen(*screen_to_px(m['cursor'][0], m['cursor'][1], m))); print('应等于', tuple(m['cursor']))"
+```
+Expected: 图中心反算结果落在 `screen_rect` 中心附近;往返结果**精确等于**鼠标当前位置(证明正反变换互逆)。
 
 - [ ] **Step 6: 提交**
 
 ```bash
 git add computer_core/observe.py tests/test_observe_zoom.py
-git commit -m "新增:10X 鼠标放大镜观察工具(NEAREST 插值+坐标映射回传)"
+git commit -m "新增:10X 鼠标放大镜观察工具(NEAREST 插值+坐标映射回传)与放大图像素->屏幕坐标反算"
 ```
 
 ### Task 4: UIA 窗口级观察模块
@@ -919,23 +1362,30 @@ git commit -m "新增:UIA 窗口级文本观察通道(纯 ctypes 零依赖, 含�
 
 **Interfaces:**
 - Consumes: Task 1/2/3/4 的全部产物
-- Produces: MCP 工具 `move`、`zoom`、`list_windows`;扩展后的 `click`(新增 `hold_ms`,`button` 增加 `x1/x2`)
+- Produces: MCP 工具 `move`、`zoom`、`zoom_to_screen`、`list_windows`;扩展后的 `click`(新增 `hold_ms`、`points`、`gap_ms`,`button` 增加 `x1/x2`);扩展后的 `move`(新增 `duration_ms`、`points`、`gap_ms`)
 
 - [ ] **Step 1: 新增 MCP 工具定义**
 
 在 `TOOLS` 列表中追加(不改动现有条目的 name/参数):
 
 ```python
-{"name": "move", "description": "只移动鼠标, 不点击(mode=smooth 平滑/instant 瞬移).",
+{"name": "move", "description": "只移动鼠标, 不点击. 单点给 x/y(可选 duration_ms 设整段耗时); 序列给 points=[[x,y],[x,y,duration_ms],...] 并用 gap_ms 设步间间隔(毫秒, 默认0). mode=smooth 平滑/instant 瞬移.",
  "inputSchema": {"type": "object",
                  "properties": {"x": {"type": "number"}, "y": {"type": "number"},
-                                "mode": {"type": "string", "enum": ["smooth", "instant"]}},
-                 "required": ["x", "y"]}},
-{"name": "zoom", "description": "放大鼠标附近或指定坐标周围区域(默认10X, NEAREST 插值). 返回图像 + screen_rect/factor, 用 screen_x = screen_rect[0] + px/factor 换算回屏幕坐标.",
+                                "mode": {"type": "string", "enum": ["smooth", "instant"]},
+                                "duration_ms": {"type": "number", "description": "单次移动耗时(毫秒), 仅 smooth 生效"},
+                                "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}},
+                                           "description": "坐标序列 [[x,y], [x,y,duration_ms], ...], 与 x/y 互斥"},
+                                "gap_ms": {"type": "number", "description": "序列相邻两点的间歇(毫秒), 默认 0"}}}},
+{"name": "zoom", "description": "放大鼠标附近或指定坐标周围区域(默认10X, NEAREST 插值). 返回图像 + meta(screen_rect/factor/out_size/seq). 想看放大图里某点的屏幕坐标, 直接把像素交给 zoom_to_screen, 不要自己心算.",
  "inputSchema": {"type": "object",
                  "properties": {"x": {"type": "number"}, "y": {"type": "number"},
                                 "factor": {"type": "integer"},
                                 "src": {"type": "integer"}}}},
+{"name": "zoom_to_screen", "description": "把【最近一次 zoom 图像】里的像素坐标(px,py, 图左上角为0,0)换算成屏幕真实坐标, 返回 screen_x/screen_y. 越界或还没 zoom 过会报错. 注意: 本工具不重新截图, 画面已变化时请重新 zoom.",
+ "inputSchema": {"type": "object",
+                 "properties": {"px": {"type": "number"}, "py": {"type": "number"}},
+                 "required": ["px", "py"]}},
 {"name": "list_windows", "description": "列出当前可见顶层窗口(UIA 无障碍树, 返回文本). 含 hwnd/名称/类名/矩形/控件类型.",
  "inputSchema": {"type": "object", "properties": {}}},
 ```
@@ -944,6 +1394,9 @@ git commit -m "新增:UIA 窗口级文本观察通道(纯 ctypes 零依赖, 含�
 
 ```python
 "hold_ms": {"type": "number", "description": "按压时长(毫秒), 0~5000, 默认 0"},
+"points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}},
+           "description": "坐标序列 [[x,y], [x,y,hold_ms], ...], 与 x/y 互斥; 每个点都会点击"},
+"gap_ms": {"type": "number", "description": "序列相邻两点的间歇(毫秒), 默认 0; 注意与 interval_ms(双击间隔) 含义不同"},
 # button 的 enum 由 ["left","right","middle"] 扩展为 ["left","right","middle","x1","x2"]
 ```
 
@@ -951,11 +1404,25 @@ git commit -m "新增:UIA 窗口级文本观察通道(纯 ctypes 零依赖, 含�
 
 ```python
 elif act == "move":
-    svc.move(_img_x(action["x"]), _img_y(action["y"]),
-             action.get("mode", "smooth"))
+    # 单点走 _img_* 换算; 序列要求模型直接给屏幕坐标(zoom_to_screen 的产物)或截图内坐标
+    if action.get("points"):
+        pts = action["points"]
+        if action.get("coord") != "screen":
+            pts = [[_img_x(p[0]), _img_y(p[1])] + list(p[2:]) for p in pts]
+        return svc.move(points=pts, gap_ms=action.get("gap_ms", 0),
+                        mode=action.get("mode", "smooth"),
+                        duration_ms=action.get("duration_ms"))
+    return svc.move(_img_x(action["x"]), _img_y(action["y"]),
+                    mode=action.get("mode", "smooth"),
+                    duration_ms=action.get("duration_ms"))
 elif act == "zoom":
     return svc.zoom_tool(action.get("x"), action.get("y"),
                          action.get("factor", 10), action.get("src", 100))
+elif act == "zoom_to_screen":
+    r = svc.zoom_to_screen(action["px"], action["py"])
+    return {"text": f"放大图像素({action['px']},{action['py']}) → 屏幕坐标 "
+                    f"({r['screen_x']}, {r['screen_y']}) [zoom seq={r['seq']} factor={r['factor']}]; "
+                    f"如需点击请用 click(x=..., y=...) 传屏幕坐标"}
 elif act == "list_windows":
     return {"text": _UIA_SESSION.format_windows()}
 ```
@@ -964,11 +1431,14 @@ elif act == "list_windows":
 
 - [ ] **Step 3: 更新 `ai_mode/controller.py` 的 `SYSTEM_PROMPT`**
 
-在动作表中追加两行(不删除任何现有行):
+在动作表中**追加**以下行(不删除任何现有行;`move`/`zoom` 两行是把原计划的两行扩展成含序列/反算的版本):
 
 ```text
-{"action":"move","x":..,"y":..,"mode":"smooth|instant"}  只移动不点击
-{"action":"zoom","x":..,"y":..,"factor":10}              放大观察目标附近(坐标用 px/factor + screen_rect[0] 换算)
+{"action":"move","x":..,"y":..,"duration_ms":..,"mode":"smooth|instant"}  只移动不点击
+{"action":"move","points":[[x,y],[x,y,duration_ms],...],"gap_ms":120}          依次移动到多个位置(点间停 gap_ms)
+{"action":"click","points":[[x,y],[x,y,hold_ms],...],"gap_ms":300}             依次点击多个位置(点间停 gap_ms)
+{"action":"zoom","x":..,"y":..,"factor":10}              放大观察目标附近(10X, 只覆盖约120x120)
+{"action":"zoom_to_screen","px":..,"py":..}              把上一张放大图里的像素换成屏幕坐标; 拿到结果后用 click 传屏幕坐标点击
 ```
 
 - [ ] **Step 4: 冒烟测试 MCP server**
@@ -979,21 +1449,23 @@ import sys; sys.path[:0]=[r'H:\cu-a',r'H:\cu-a\vendor']
 import computer_mcp.server as s
 names=[t['name'] for t in s.TOOLS]
 print('工具数:', len(names)); print(names)
-assert 'move' in names and 'zoom' in names and 'list_windows' in names
+assert {'move', 'zoom', 'zoom_to_screen', 'list_windows'} <= set(names)
+import json; print(json.dumps([t['name'] for t in s.TOOLS if t['name'] == 'click'][0]['inputSchema']['properties'].get('points'), ensure_ascii=False))
 print('OK')
 "
 ```
-Expected: 工具数 24(原 21 + 3),包含 `move`/`zoom`/`list_windows`,且原有全部工具名仍在。
+Expected: 工具数 25(原 21 + 4),包含 `move`/`zoom`/`zoom_to_screen`/`list_windows`,且原有全部工具名仍在;
+`click` 的 `button` enum 已含 `x1/x2`,`click`/`move` 的 schema 已含 `points`/`gap_ms`(上面那行 json 应打印出 points 的定义而非 null)。
 
 - [ ] **Step 5: 更新 README**
 
-在"模型可用动作"表与"DSH MCP 插件集成"表里补 `move`/`zoom`/`list_windows` 三行,并写明 `click` 的新参数。
+在"模型可用动作"表与"DSH MCP 插件集成"表里补 `move`/`zoom`/`zoom_to_screen`/`list_windows` 四行,并写明 `click`/`move` 的新参数(`hold_ms`/`duration_ms`/`points`/`gap_ms`),以及"截图内像素 vs 屏幕物理像素"的口径区别与坐标反算工作流。
 
 - [ ] **Step 6: 提交**
 
 ```bash
 git add computer_mcp/server.py ai_mode/controller.py README.md
-git commit -m "新增:MCP 工具 move/zoom/list_windows, click 支持按压时长与侧键"
+git commit -m "新增:MCP 工具 move/zoom/zoom_to_screen/list_windows, click 与 move 支持执行时间与带间隔的坐标序列"
 ```
 
 ---
@@ -1006,7 +1478,8 @@ git commit -m "新增:MCP 工具 move/zoom/list_windows, click 支持按压时�
 | UIA TreeWalker | **未定位索引** | `get_RawViewWalker` 推算在 41~46,实测 41 返回 null、42/43 access violation | 用 `IUIAutomation::CreateTreeWalker(cond,&walker)`(推算索引 10)替代 getter |
 | element 属性完整性 | 部分验证 | 21/23/29/30/43 已验证;`IsEnabled`/`IsOffscreen`/`ProcessId` 等未验证 | 需要时按同一方法先探测再使用 |
 | BSTR 内存 | 已知泄漏 | 用 `wstring_at` 读后未 `SysFreeString` | 后续加 `oleaut32.SysFreeString` |
-| 放大镜多屏 | 未验证 | `clamp_region` 目前按单屏尺寸;多屏负坐标(`rect=(-8,-8,...)` 已在实测中出现)可能夹取错误 | 需要时用 `SM_XVIRTUALSCREEN`/`SM_CXVIRTUALSCREEN` 取虚拟屏边界 |
+| 放大镜多屏 | 未验证 | `clamp_region` 目前按单屏尺寸;多屏负坐标(`rect=(-8,-8,...)` 已在实测中出现)可能夹取错误。**反算受同一问题影响**(screen_rect 本身就可能夹错) | 需要时用 `SM_XVIRTUALSCREEN`/`SM_CXVIRTUALSCREEN` 取虚拟屏边界 |
+| 反算的时效性 | 已知局限(设计如此) | `zoom_to_screen` 用的是"最近一次 zoom"的映射,期间画面/窗口位置变化会让结果过时;并发调用时后一次 zoom 会覆盖前一次 | 工具描述与 AI 动作表已写明"画面变化要重新 zoom";不做自动失效检测(需要屏幕哈希,成本高) |
 | 侧键被驱动映射 | 环境相关 | 部分鼠标厂商驱动把 x1/x2 硬映射为前进/后退 | 文档说明即可,无法绕过 |
 
 **风险**:UIA 通道对 Electron/Chromium 应用(实测里 `Chrome_WidgetWin_1`)的**控件树**深度有限,且需要应用开启无障碍支持。**游戏/Canvas 场景必须回退到截图 + 放大镜**。
@@ -1018,10 +1491,17 @@ git commit -m "新增:MCP 工具 move/zoom/list_windows, click 支持按压时�
 - [ ] `python -m unittest discover tests -v` 全绿
 - [ ] `ComputerService().click(100,100,button='x1',hold_ms=200,clicks=2)` 不抛异常
 - [ ] 旧调用 `svc.click(x, y, button="right", clicks=2)` 行为与重构前一致(先瞬移再双击)
+- [ ] `svc.click()`(无坐标)不产生任何移动调用;`svc.move()` 不产生任何点击调用
+- [ ] `move(points=[[..],[..]], duration_ms=400, gap_ms=300)` 走完每个点、每段耗时约 400ms、相邻点之间停约 300ms、**最后一点后不再等待**;三元点的 `duration_ms` 覆盖函数级值
+- [ ] `click(points=[[..],[..]], hold_ms=150, gap_ms=500)` 每个点都点击、每点按压约 150ms、点间停约 500ms;`interval_ms`(双击间隔)未被 `gap_ms` 影响
+- [ ] `points` 与 `x`/`y`/`at` 同时传入时抛 `ValueError`;空列表、长度为 1/4 的元素、非数字、`gap_ms<0`、三元 `t` 越界都抛 `ValueError`
 - [ ] `zoom()` 输出图上 1px 细线为硬边(证明用了 NEAREST)
 - [ ] `zoom()` 的 `meta.factor` 在 `src` 很大时自动下调,且 `screen_rect` 与实际截图区域一致
+- [ ] `px_to_screen(*screen_to_px(sx, sy, meta), meta) == (sx, sy)`(正反变换互逆)
+- [ ] `zoom_to_screen` 在未 zoom 时抛 `RuntimeError`、像素越界时抛 `ValueError`(错误信息含真实 `out_size`);正常时返回的 `seq` 与 `zoom` 的 `seq` 一致
+- [ ] 按"zoom → zoom_to_screen → click"闭环点中一个 10X 放大图里选中的小目标(人工验证一次)
 - [ ] `UIA().format_windows()` 能列出当前所有可见窗口
-- [ ] MCP `TOOLS` 工具数为 24,原有 21 个工具名全部保留
+- [ ] MCP `TOOLS` 工具数为 25,原有 21 个工具名全部保留
 - [ ] `ai_mode` 的 `SYSTEM_PROMPT` 原有 19 种动作一行未删
 - [ ] `git status` 干净,无临时文件入库
 
@@ -1043,6 +1523,9 @@ vtable 已验证:
 
 pynput Button 枚举(实测) : ['unknown','left','middle','right','x1','x2']
 GetDoubleClickTime 默认  : 500 ms
+HOLD_MS_MAX              : 5000 (click 按压时长上限)
+DOUBLE_CLICK_INTERVAL_MS : 80   (click 的 interval_ms 默认值, 同一次点击内部)
+GAP_MS_DEFAULT           : 0    (points 序列相邻两点间歇, move/click 的 gap_ms 默认值)
 ```
 
 ### 7.2 运行本项目代码的前提
