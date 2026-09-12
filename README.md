@@ -213,6 +213,8 @@ python main.py
 | combo | keys |
 | slide | dx, dy |
 | zoom / zoom_to_screen | 放大观察 x, y, factor(默认10X);像素反算 px, py(返回的 img_x/img_y 可直接给 click/move) |
+| focus_window | hwnd 或 title(把目标窗口激活到前台) |
+| send_text | text, submit(如 "ctrl+enter"), clear_first(输入并提交, 解决"Enter 只换行") |
 | switch_mode | game / draw / work |
 | set_config | key, value (仅白名单) |
 | finish | result |
@@ -251,6 +253,11 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 | `mcp__computer__move` | 只移动不点击, 支持 duration_ms 与 points+gap_ms |
 | `mcp__computer__zoom` / `zoom_to_screen` | 10X 放大镜观察(返回图像) + 放大图像素换算回坐标 |
 | `mcp__computer__list_windows` | UIA 无障碍树窗口清单(文本) |
+| `mcp__computer__focus_window` | 按 hwnd/标题把窗口激活到前台 |
+| `mcp__computer__send_text` | 输入文字并按组合键提交(如 ctrl+enter) |
+
+> 📘 **完整接口文档(坐标契约 / 26 个工具逐个说明 / Python API / 新增工具步骤)见 [docs/MCP接口文档.md](docs/MCP接口文档.md)。**
+> 当前工具数 **26**;所有坐标工具支持 `coord=image|screen`(缺省 image=最近一次截图内的像素),返回值会回显口径。
 | `mcp__computer__type_text` / `press_key` / `combo` | 键盘输入 |
 | `mcp__computer__switch_mode` | 切换 game/draw/work 模式 |
 | `mcp__computer__draw_curve` / `set_brush` | 绘画操作 |
