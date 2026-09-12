@@ -280,9 +280,13 @@ class ComputerService:
                     "error": f"未找到窗口 (hwnd={hwnd}, title={title!r}); 当前候选: {cands}"}
         ok = u.focus(rec["hwnd"])
         log.info("focus_window hwnd=%s title=%r -> ok=%s", rec["hwnd"], title, ok)
-        return {"ok": bool(ok), "hwnd": rec["hwnd"],
-                "name": rec.get("name") or rec.get("win32_title"),
-                "class": rec.get("class"), "rect": rec.get("rect")}
+        out = {"ok": bool(ok), "hwnd": rec["hwnd"],
+               "name": rec.get("name") or rec.get("win32_title"),
+               "class": rec.get("class"), "rect": rec.get("rect")}
+        if not ok:
+            out["note"] = ("窗口已定位但未能置前(可能受 Windows 前台锁定或权限限制); "
+                           "可直接用 rect 算出中心点坐标后 click 该区域")
+        return out
 
     def send_text(self, text: str, submit_keys: list | None = None,
                   clear_first: bool = False) -> dict:

@@ -122,11 +122,16 @@ def _coord_block(coord: str = "image") -> dict:
 
 
 def _coord_echo(result, coord: str = "image") -> dict:
-    """给坐标类动作的返回值附上口径与换算结果, 便于调用方自检。"""
-    if isinstance(result, dict):
-        result.setdefault("coord", coord)
-        result.setdefault("img_size", [_img_w, _img_h])
-        result.setdefault("screen_size", [_SCREEN_W, _SCREEN_H])
+    """给坐标类动作的返回值附上口径与换算结果, 便于调用方自检。
+
+    服务层有些方法(drag/scroll/mouse_down/mouse_up/slide)返回 None, 这里统一补成 {"ok": true},
+    否则 JSON 层会返回 null, 调用方会以为失败。
+    """
+    if not isinstance(result, dict):
+        result = {"ok": True}
+    result.setdefault("coord", coord)
+    result.setdefault("img_size", [_img_w, _img_h])
+    result.setdefault("screen_size", [_SCREEN_W, _SCREEN_H])
     return result
 
 

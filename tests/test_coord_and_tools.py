@@ -98,5 +98,36 @@ class TestNewToolsDispatch(unittest.TestCase):
                 self.assertIn("coord", t["inputSchema"]["properties"], t["name"])
 
 
+class TestVoidActionsStillReturnOk(unittest.TestCase):
+    """服务层有些方法返回 None(drag/scroll/...), 分派后必须仍返回 {"ok": true} 而不是 null。"""
+
+    def _assert_ok(self, action, method):
+        with mock.patch.object(server.SERVICE, method) as m:
+            m.return_value = None
+            r = server._run_single(action)
+            self.assertIsInstance(r, dict)
+            self.assertTrue(r["ok"])
+            self.assertEqual(r["coord"], "image")
+
+    def test_drag(self):
+        self._assert_ok({"action": "drag", "x1": 1, "y1": 2, "x2": 3, "y2": 4}, "drag")
+
+    def test_scroll(self):
+        self._assert_ok({"action": "scroll", "x": 1, "y": 2, "dy": -300}, "scroll")
+
+    def test_mouse_down_and_up(self):
+        self._assert_ok({"action": "mouse_down", "x": 1, "y": 2}, "mouse_down")
+        self._assert_ok({"action": "mouse_up", "x": 1, "y": 2}, "mouse_up")
+
+    def test_slide(self):
+        self._assert_ok({"action": "slide", "dx": 5, "dy": 5}, "slide")
+
+    def test_non_coord_void_action_stays_minimal(self):
+        with mock.patch.object(server.SERVICE, "wait") as m:
+            m.return_value = None
+            r = server._run_single({"action": "wait", "seconds": 0})
+            self.assertEqual(r, {"ok": True})
+
+
 if __name__ == "__main__":
     unittest.main()

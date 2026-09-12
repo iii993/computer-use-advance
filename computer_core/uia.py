@@ -84,6 +84,8 @@ _user32.ShowWindow.restype = c_bool
 _user32.ShowWindow.argtypes = [c_void_p, c_int]
 _user32.SetForegroundWindow.restype = c_bool
 _user32.SetForegroundWindow.argtypes = [c_void_p]
+_user32.GetForegroundWindow.restype = c_void_p
+_user32.GetForegroundWindow.argtypes = []
 
 SW_RESTORE = 9          # ShowWindow: 还原并激活最小化窗口
 
@@ -219,14 +221,17 @@ class UIA:
         return None
 
     def focus(self, hwnd) -> bool:
-        """把窗口激活到前台(最小化时先还原)。返回是否成功。
+        """把窗口激活到前台(最小化时先还原)。返回"调用后它是否在前台"。
 
-        注意: 目标窗口若以管理员权限运行, 普通权限进程调用会失败(Windows 限制)。
+        真机实测: 窗口已经在前台时 SetForegroundWindow 常常返回 0, 那不是失败, 所以先看
+        GetForegroundWindow。目标窗口若以管理员权限运行, 普通权限进程确实无法前置。
         """
         h = c_void_p(int(hwnd))
         try:
             if _user32.IsIconic(h):
                 _user32.ShowWindow(h, SW_RESTORE)
+            if int(_user32.GetForegroundWindow() or 0) == int(hwnd):
+                return True
             return bool(_user32.SetForegroundWindow(h))
         except OSError:
             return False

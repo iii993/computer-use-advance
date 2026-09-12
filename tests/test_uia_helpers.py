@@ -1,5 +1,6 @@
 # tests/test_uia_helpers.py
 import sys, os, unittest
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vendor"))
 
@@ -55,6 +56,33 @@ class TestFindWindow(unittest.TestCase):
 
     def test_no_match_returns_none(self):
         self.assertIsNone(self._u().find_window(title="不存在的窗口"))
+
+
+class TestFocusSemantics(unittest.TestCase):
+    """真机暴露: 窗口已经在前台时 SetForegroundWindow 会失败, 但那不算失败。"""
+
+    def _u(self):
+        return uia.UIA.__new__(uia.UIA)
+
+    def test_already_foreground_counts_as_success(self):
+        with mock.patch.object(uia._user32, "GetForegroundWindow", return_value=42), \
+             mock.patch.object(uia._user32, "IsIconic", return_value=False):
+            self.assertTrue(self._u().focus(42))
+
+    def test_calls_set_foreground_when_not_foreground(self):
+        with mock.patch.object(uia._user32, "GetForegroundWindow", return_value=7), \
+             mock.patch.object(uia._user32, "IsIconic", return_value=False), \
+             mock.patch.object(uia._user32, "SetForegroundWindow", return_value=1) as sf:
+            self.assertTrue(self._u().focus(42))
+            sf.assert_called_once()
+
+    def test_minimized_window_is_restored_first(self):
+        with mock.patch.object(uia._user32, "GetForegroundWindow", return_value=7), \
+             mock.patch.object(uia._user32, "IsIconic", return_value=True), \
+             mock.patch.object(uia._user32, "ShowWindow", return_value=1) as sw, \
+             mock.patch.object(uia._user32, "SetForegroundWindow", return_value=1):
+            self._u().focus(42)
+            self.assertEqual(sw.call_args.args[1], uia.SW_RESTORE)
 
 
 if __name__ == "__main__":
