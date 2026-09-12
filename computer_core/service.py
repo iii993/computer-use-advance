@@ -37,6 +37,7 @@ class ComputerService:
         self.mapper = PressureMapper(self.config.get("draw", {}).get("pen", {}))
         self.mode = "work"  # 当前模式
         self.brush_size = int(self.config.get("draw", {}).get("brush", {}).get("min", 1))
+        self._uia = None   # UIA 会话(惰性创建; COM STA 要求同线程使用)
 
     def reload_config(self):
         self.config = load_config()
@@ -224,6 +225,35 @@ class ComputerService:
                 mouse.mc.release(mouse.Button.left)
         log.info("绘制曲线 %d 控制点 -> %d 细分点", len(points), len(curve))
         return {"ok": True, "points": len(curve)}
+
+    # ---------- 观察通道(放大镜 / UIA) ----------
+    def zoom_tool(self, x=None, y=None, factor: int = 10, src: int = 100):
+        """放大观察指定屏幕坐标(或当前位置); 返回 (jpeg_bytes, meta)。
+
+        meta 含 screen_rect/factor/out_size/seq; 本次映射会被记为"最近一次观察",
+        供 zoom_to_screen 反算(见计划 §2.3.1)。
+        """
+        from computer_core import observe
+        b, meta = observe.zoom(x, y, factor=int(factor), src=int(src))
+        log.info("zoom factor=%s src=%s rect=%s seq=%s", meta["factor"], src,
+                 meta["screen_rect"], meta["seq"])
+        return b, meta
+
+    def zoom_to_screen(self, px, py) -> dict:
+        """放大图像素 -> 屏幕真实坐标(用最近一次 zoom 的映射)。"""
+        from computer_core import observe
+        sx, sy = observe.px_to_screen(px, py)
+        meta = observe.last_meta() or {}
+        log.info("zoom_to_screen (%s,%s) -> (%s,%s) seq=%s", px, py, sx, sy, meta.get("seq"))
+        return {"screen_x": sx, "screen_y": sy,
+                "seq": meta.get("seq"), "factor": meta.get("factor")}
+
+    def describe_windows(self, max_items: int = 30) -> str:
+        """列出可见顶层窗口(UIA 无障碍树, 文本)。"""
+        if self._uia is None:
+            from computer_core.uia import UIA
+            self._uia = UIA()
+        return self._uia.format_windows(max_items)
 
     # ---------- 模式 ----------
     def switch_mode(self, mode: str):
