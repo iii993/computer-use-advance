@@ -9,3 +9,11 @@ __pycache__/
 # 临时截图产物
 screenshot_*.jpg
 screenshot_*.png
+# 探测/临时目录(计划 §7.3)
+.tmp/
+work/
+# 测试产物图片(Krita 试画输出, 不入库)
+catgirl_happy_chibi.png
+angry_bird_riding_bike.png
+*测试*.png
+表情包_*.png
