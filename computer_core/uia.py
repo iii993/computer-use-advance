@@ -207,18 +207,80 @@ class UIA:
         return "\n".join(lines) if lines else "(未发现可见顶层窗口)"
 
     # ---- 窗口查找与激活 ----
-    def find_window(self, hwnd=None, title=None) -> dict | None:
-        """按 hwnd 或标题子串(不区分大小写, 匹配 name/win32_title/class)找一个可见顶层窗口。"""
-        if hwnd is None and not title:
-            return None
-        for w in self.list_windows():
-            if hwnd is not None and int(w.get("hwnd") or 0) == int(hwnd):
-                return w
-            if title:
-                hay = " ".join(str(w.get(k, "")) for k in ("name", "win32_title", "class")).lower()
-                if str(title).lower() in hay:
-                    return w
-        return None
+    @staticmethod
+    def _title_score(title: str, w: dict) -> int:
+        """标题匹配打分(越大越精确)。
+
+        真机教训: 早先只用"子串命中", 于是 title="Krita" 会先撞上 Everything 的
+        "krita.e - Everything" 窗口。现在按 完全相等 > 词边界 > 前缀 > 子串 分级,
+        且 name 的权重高于 win32_title, class 只作为最后兜底。
+        """
+
+        def score_one(text: str, base: int) -> int:
+            text = (text or "").strip().lower()
+            if not text:
+                return 0
+            if text == t:
+                return base
+            for sep in (" - ", " – ", " — ", " | ", ": ", " · "):
+                if text.startswith(t + sep) or text.endswith(sep + t):
+                    return base - 15
+            if text.startswith(t):
+                return base - 30
+            if t in text:
+                return base - 45
+            return 0
+
+        t = str(title or "").strip().lower()
+        if not t:
+            return 0
+        cls = str(w.get("class") or "").lower()
+        return max(score_one(w.get("name"), 100),
+                   score_one(w.get("win32_title"), 95),
+                   25 if t in cls else 0)
+
+    def find_window(self, hwnd=None, title=None, with_candidates: bool = False):
+        """按 hwnd 或标题找一个可见顶层窗口。
+
+        - hwnd 给了就精确匹配, 找到即返回
+        - title 走 _title_score 排序: 分数高者优先, 同分时优先"有实际面积的窗口"、
+          再优先标题更短的(避免长标题里恰好含关键词的窗口胜出)
+        - with_candidates=True 时返回 (best, others);others 是次优候选(最多 5 个),
+          用来告诉调用方"这里其实有歧义, 建议改用 hwnd"
+        """
+        windows = self.list_windows()
+        if hwnd is not None:
+            for w in windows:
+                if int(w.get("hwnd") or 0) == int(hwnd):
+                    return (w, []) if with_candidates else w
+            return (None, []) if with_candidates else None
+        if not title:
+            return (None, []) if with_candidates else None
+
+        ranked = []
+        for w in windows:
+            s = self._title_score(title, w)
+            if s <= 0:
+                continue
+            rect = w.get("rect") or (0, 0, 0, 0)
+            try:
+                area = max(0, int(rect[2]) - int(rect[0])) * max(0, int(rect[3]) - int(rect[1]))
+            except (TypeError, ValueError, IndexError):
+                area = 0
+            label = str(w.get("name") or w.get("win32_title") or "")
+            ranked.append((-s, 0 if area > 0 else 1, len(label), w))
+
+        if not ranked:
+            return (None, []) if with_candidates else None
+        ranked.sort(key=lambda item: item[:3])
+        best = ranked[0][3]
+        if not with_candidates:
+            return best
+        others = [{"hwnd": item[3].get("hwnd"),
+                   "name": item[3].get("name") or item[3].get("win32_title"),
+                   "class": item[3].get("class")}
+                  for item in ranked[1:6]]
+        return best, others
 
     def focus(self, hwnd) -> bool:
         """把窗口激活到前台(最小化时先还原)。返回"调用后它是否在前台"。

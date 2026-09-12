@@ -85,5 +85,44 @@ class TestFocusSemantics(unittest.TestCase):
             self.assertEqual(sw.call_args.args[1], uia.SW_RESTORE)
 
 
+class TestFindWindowRanking(unittest.TestCase):
+    """真机暴露: title="Krita" 曾匹配到 "krita.e - Everything" 窗口 —— 子串匹配太宽松。"""
+
+    WINDOWS = [
+        {"hwnd": 1, "name": "krita.e - Everything", "class": "EVERYTHING",
+         "win32_title": "krita.e - Everything", "rect": (0, 0, 0, 0)},
+        {"hwnd": 2, "name": "无标题 - Krita", "class": "KDockMainWindow",
+         "win32_title": "无标题 - Krita", "rect": (10, 10, 800, 600)},
+        {"hwnd": 3, "name": "Chrome_WidgetWin_1", "class": "Chrome_WidgetWin_1",
+         "win32_title": "krita 教程 - 浏览器", "rect": (0, 0, 1200, 800)},
+    ]
+
+    def _u(self, windows=None):
+        u = uia.UIA.__new__(uia.UIA)
+        u.list_windows = lambda *a, **k: list(windows if windows is not None else self.WINDOWS)
+        return u
+
+    def test_word_boundary_beats_loose_prefix(self):
+        # "无标题 - Krita"(词边界) 应胜过 "krita.e - Everything"(仅前缀)
+        self.assertEqual(self._u().find_window(title="Krita")["hwnd"], 2)
+
+    def test_exact_name_wins_over_everything(self):
+        w = [{"hwnd": 9, "name": "Krita", "class": "X", "win32_title": "Krita", "rect": (0, 0, 10, 10)},
+             {"hwnd": 8, "name": "无标题 - Krita", "class": "Y", "win32_title": "无标题 - Krita", "rect": (0, 0, 10, 10)}]
+        self.assertEqual(self._u(w).find_window(title="krita")["hwnd"], 9)
+
+    def test_with_candidates_reports_ambiguity(self):
+        best, others = self._u().find_window(title="Krita", with_candidates=True)
+        self.assertEqual(best["hwnd"], 2)
+        hwnds = [o["hwnd"] for o in others]
+        self.assertIn(1, hwnds)                 # 宽松匹配到的窗口要能被告知
+        self.assertNotIn(2, hwnds)
+
+    def test_no_match_returns_none_pair(self):
+        best, others = self._u().find_window(title="不存在", with_candidates=True)
+        self.assertIsNone(best)
+        self.assertEqual(others, [])
+
+
 if __name__ == "__main__":
     unittest.main()

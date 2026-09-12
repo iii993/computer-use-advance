@@ -313,7 +313,8 @@ TOOLS = [
 
     {"name": "focus_window", "description":
      "【高层工具】把指定窗口激活到前台(最小化会先还原), 之后可以直接 type_text / send_text 输入到它, 或按 rect 计算坐标去点击。"
-     "【定位】二选一: hwnd(来自 list_windows) 或 title(子串匹配, 不区分大小写, 会匹配 name/win32_title/class, 取第一个命中)。"
+     "【定位】二选一: hwnd(来自 list_windows, 精确) 或 title(不区分大小写, 按 完全相等 > 词边界(如 \"文档 - Krita\") > 前缀 > 子串 打分选最优, 并优先有实际面积的窗口)。"
+     "【歧义】title 命中多个窗口时, 返回值会带 other_candidates 列表 —— 那种情况请改用 hwnd。"
      "【返回】{ok, hwnd, name, class, rect} 或 {ok:false, error}(error 里带当前候选窗口列表)。"
      "【坑】目标窗口若以管理员权限运行, 普通权限进程可能无法前置(Windows 限制); 聚焦成功不等于输入框已聚焦, 通常还要 click 一下输入框。",
      "inputSchema": {"type": "object",

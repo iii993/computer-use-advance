@@ -19,7 +19,7 @@ class TestFocusWindow(unittest.TestCase):
     def test_unknown_title_reports_error(self):
         svc = self._svc()
         fake = mock.Mock()
-        fake.find_window.return_value = None
+        fake.find_window.return_value = (None, [])
         fake.list_windows.return_value = [{"hwnd": 1, "name": "x", "win32_title": "x"}]
         svc._uia = fake
         r = svc.focus_window(title="不存在的窗口")
@@ -30,12 +30,15 @@ class TestFocusWindow(unittest.TestCase):
         svc = self._svc()
         fake = mock.Mock()
         fake.focus.return_value = True
-        fake.find_window.return_value = {"hwnd": 7, "name": "记事本", "class": "Notepad",
-                                         "win32_title": "记事本", "rect": (0, 0, 100, 100)}
+        fake.find_window.return_value = (
+            {"hwnd": 7, "name": "记事本", "class": "Notepad",
+             "win32_title": "记事本", "rect": (0, 0, 100, 100)},
+            [{"hwnd": 8, "name": "别的窗口", "class": "X"}])
         svc._uia = fake
         r = svc.focus_window(hwnd=7)
         self.assertTrue(r["ok"])
         self.assertEqual(r["hwnd"], 7)
+        self.assertEqual(r["other_candidates"][0]["hwnd"], 8)
 
 
 class TestSendText(unittest.TestCase):

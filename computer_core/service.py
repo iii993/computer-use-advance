@@ -272,7 +272,7 @@ class ComputerService:
         if hwnd is None and not title:
             raise ValueError("focus_window 需要 hwnd 或 title 之一")
         u = self._uia_session()
-        rec = u.find_window(hwnd=hwnd, title=title)
+        rec, others = u.find_window(hwnd=hwnd, title=title, with_candidates=True)
         if rec is None:
             cands = [f"{w.get('hwnd')}:{w.get('name') or w.get('win32_title')}"
                      for w in u.list_windows()[:10]]
@@ -283,6 +283,11 @@ class ComputerService:
         out = {"ok": bool(ok), "hwnd": rec["hwnd"],
                "name": rec.get("name") or rec.get("win32_title"),
                "class": rec.get("class"), "rect": rec.get("rect")}
+        if others:
+            # 有歧义时明确告知: 调用方应改用 hwnd 精确指定
+            out["other_candidates"] = others
+            out["note"] = ("标题匹配到多个窗口, 已选最精确的一个; "
+                           "需要精确指定请用 list_windows 拿到 hwnd 再调用")
         if not ok:
             out["note"] = ("窗口已定位但未能置前(可能受 Windows 前台锁定或权限限制); "
                            "可直接用 rect 算出中心点坐标后 click 该区域")
