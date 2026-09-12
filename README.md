@@ -202,7 +202,8 @@ python main.py
 
 | 动作 | 参数 |
 | --- | --- |
-| click / double_click / right_click | x, y |
+| click / double_click / right_click | x, y;click 另支持 hold_ms(按压时长 0~5000)、button 侧键 x1/x2、points+gap_ms(坐标序列) |
+| move | x, y, mode(smooth/instant), duration_ms(整段耗时);序列 points=[[x,y],[x,y,耗时]], gap_ms |
 | drag / mouse_down / mouse_up | 坐标/拖拽/按放 |
 | scroll | x, y, dy (滚轮) |
 | wait | seconds |
@@ -211,6 +212,7 @@ python main.py
 | press_key | key |
 | combo | keys |
 | slide | dx, dy |
+| zoom / zoom_to_screen | 放大观察 x, y, factor(默认10X);像素反算 px, py(返回的 img_x/img_y 可直接给 click/move) |
 | switch_mode | game / draw / work |
 | set_config | key, value (仅白名单) |
 | finish | result |
@@ -245,7 +247,10 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 | --- | --- |
 | `mcp__computer__screenshot` | 截取全屏(返回图像) |
 | `mcp__computer__get_state` | 当前模式/光标/画笔 |
-| `mcp__computer__click` / `drag` / `slide` | 鼠标操作 |
+| `mcp__computer__click` / `drag` / `slide` | 鼠标操作;click 支持 hold_ms 按压时长、侧键 x1/x2、points 坐标序列 |
+| `mcp__computer__move` | 只移动不点击, 支持 duration_ms 与 points+gap_ms |
+| `mcp__computer__zoom` / `zoom_to_screen` | 10X 放大镜观察(返回图像) + 放大图像素换算回坐标 |
+| `mcp__computer__list_windows` | UIA 无障碍树窗口清单(文本) |
 | `mcp__computer__type_text` / `press_key` / `combo` | 键盘输入 |
 | `mcp__computer__switch_mode` | 切换 game/draw/work 模式 |
 | `mcp__computer__draw_curve` / `set_brush` | 绘画操作 |
@@ -306,7 +311,7 @@ A: AI 通过 `set_config` 动作修改白名单内参数(见 `ai.whitelist`), �
 
 ```
 main.py            入口: 托盘 + 全局热键 + 模式分发 + AI任务
-computer_core/     操控服务(截图/动作/白名单配置)
+computer_core/     操控服务(截图/动作/白名单配置) + observe.py(10X放大镜/像素反算) + uia.py(UIA窗口观察)
 ai_mode/           AI 指挥官(识图检测 + 任务循环)
 computer_mcp/      MCP server(DSH 插件)
 utils/             配置 / 日志 / 几何算法(RDP)

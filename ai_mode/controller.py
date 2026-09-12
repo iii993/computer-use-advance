@@ -73,12 +73,20 @@ SYSTEM_PROMPT = """你是电脑操控 AI。你通过截图观察屏幕, 调用�
 {"action":"set_config","key":"mouse.jitter_px","value":1.5} 修改配置(仅白名单)
 {"action":"wait","seconds":2}                    等待(页面加载/动画)
 {"action":"take_screenshot"}                     主动截图观察
+{"action":"move","x":..,"y":..,"duration_ms":..,"mode":"smooth|instant"}  只移动不点击(duration_ms=整段耗时)
+{"action":"move","points":[[x,y],[x,y,duration_ms],...],"gap_ms":120}      依次移动到多个位置, 点间停 gap_ms 毫秒
+{"action":"click","points":[[x,y],[x,y,hold_ms],...],"gap_ms":300}         依次点击多个位置, 点间停 gap_ms 毫秒
+{"action":"zoom","x":..,"y":..,"factor":10}      放大观察目标附近(10X, 约120x120像素)
+{"action":"zoom_to_screen","px":..,"py":..}      把最近一次放大图里的像素换成坐标(img_x/img_y 可直接用于点击)
 {"action":"finish","result":"任务完成说明"}       完成任务
 规则:
 - actions 数组按顺序执行, 可一次返回多个动作(减少往返)
 - 每批动作执行后系统会自动截图反馈新状态
 - 截图使用原始分辨率, 坐标与真实屏幕一致, 直接使用
 - 操作后如需确认效果可加 take_screenshot
+- move 只移动不点击, click 只点击(不给 x/y 就原地点击): 要"移过去→确认→再点"请分成两条动作
+- points 坐标序列与 x/y 互斥; gap_ms 是序列相邻两点的间歇, 与双击间隔无关; 三元点 [x,y,时间] 覆盖本点耗时
+- zoom 的 x/y 用屏幕坐标; 放大图里的像素交给 zoom_to_screen 换算(img_x/img_y 可直接用于 click/move)
 - 不要臆想屏幕内容, 以截图为准
 - 任务完成后输出 finish"""
 
@@ -262,7 +270,32 @@ class AIController:
         act = action.get("action")
         try:
             if act == "click":
-                svc.click(action.get("x", 0), action.get("y", 0))
+                if action.get("points"):
+                    return svc.click(points=action["points"],
+                                     button=action.get("button", "left"),
+                                     clicks=int(action.get("clicks", 1)),
+                                     hold_ms=float(action.get("hold_ms", 0)),
+                                     gap_ms=float(action.get("gap_ms", 0)))
+                return svc.click(action.get("x", 0), action.get("y", 0),
+                                 button=action.get("button", "left"),
+                                 clicks=int(action.get("clicks", 1)),
+                                 hold_ms=float(action.get("hold_ms", 0)))
+            elif act == "move":
+                _mode = action.get("mode", "smooth")
+                if action.get("points"):
+                    return svc.move(points=action["points"],
+                                    gap_ms=float(action.get("gap_ms", 0)),
+                                    mode=_mode, duration_ms=action.get("duration_ms"))
+                return svc.move(action.get("x", 0), action.get("y", 0),
+                                mode=_mode, duration_ms=action.get("duration_ms"))
+            elif act == "zoom":
+                _b, meta = svc.zoom_tool(action.get("x"), action.get("y"),
+                                         action.get("factor", 10), action.get("src", 100))
+                return {"ok": True, "seq": meta["seq"], "factor": meta["factor"],
+                        "out_size": meta["out_size"], "screen_rect": meta["screen_rect"],
+                        "note": "AI 模式暂不返回放大图(动作级图像未接入), 需要看图请用 take_screenshot"}
+            elif act == "zoom_to_screen":
+                return {"ok": True, **svc.zoom_to_screen(action["px"], action["py"])}
             elif act == "double_click":
                 svc.click(action.get("x", 0), action.get("y", 0), clicks=2)
             elif act == "right_click":

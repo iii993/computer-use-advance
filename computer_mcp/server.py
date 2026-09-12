@@ -60,17 +60,43 @@ def _img_cursor(cursor) -> list:
             round(cursor[1] / _SCREEN_H * _img_h, 1)]
 
 
+def _img_points(points) -> list:
+    """坐标序列 截图内像素 -> 屏幕坐标(保留三元点的第三个值)。"""
+    out = []
+    for p in points or []:
+        pt = [_img_x(p[0]), _img_y(p[1])]
+        if len(p) > 2:
+            pt.append(p[2])
+        out.append(pt)
+    return out
+
+
+def _to_img_xy(sx, sy) -> list:
+    """屏幕坐标 -> 截图内像素(模型侧口径, 供 click/move 直接使用)。"""
+    return [round(sx / _SCREEN_W * _img_w, 1),
+            round(sy / _SCREEN_H * _img_h, 1)]
+
+
+def _to_img_rect(rect) -> list:
+    """屏幕矩形 -> 截图内像素矩形。"""
+    return [_to_img_xy(rect[0], rect[1])[0], _to_img_xy(rect[0], rect[1])[1],
+            _to_img_xy(rect[2], rect[3])[0], _to_img_xy(rect[2], rect[3])[1]]
+
+
 TOOLS = [
     {"name": "screenshot", "description": "截取全屏图像(等比缩到约64万像素, 尺寸见返回说明). 坐标请用【截图内像素坐标】: x范围0-截图宽, y范围0-截图高, server自动换算真实屏幕.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "get_state", "description": "获取当前状态(模式/光标[截图内像素]/画笔大小).",
      "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "click", "description": "点击(x,y为截图内像素坐标, 以最近一次截图尺寸为准).",
+    {"name": "click", "description": "点击(x,y为截图内像素坐标, 以最近一次截图尺寸为准; 不给 x/y 则原地点击). 支持 hold_ms 按压时长、points 坐标序列与 gap_ms 步间间隔.",
      "inputSchema": {"type": "object",
                      "properties": {"x": {"type": "number"}, "y": {"type": "number"},
-                                    "button": {"type": "string", "enum": ["left", "right", "middle"]},
-                                    "clicks": {"type": "integer"}},
-                     "required": ["x", "y"]}},
+                                    "button": {"type": "string", "enum": ["left", "right", "middle", "x1", "x2"]},
+                                    "clicks": {"type": "integer"},
+                                    "hold_ms": {"type": "number", "description": "按压时长(毫秒), 0~5000, 默认 0"},
+                                    "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}},
+                                               "description": "坐标序列 [[x,y], [x,y,hold_ms], ...], 与 x/y 互斥; 每个点都会点击"},
+                                    "gap_ms": {"type": "number", "description": "序列相邻两点的间歇(毫秒), 默认 0; 与双击间隔无关"}}}},
     {"name": "drag", "description": "拖拽: 按住左键从(x1,y1)到(x2,y2), 坐标为截图内像素.",
      "inputSchema": {"type": "object",
                      "properties": {"x1": {"type": "number"}, "y1": {"type": "number"},
@@ -132,7 +158,25 @@ TOOLS = [
                      "required": ["key", "value"]}},
     {"name": "check_vision", "description": "检测MCP服务端配置的模型是否支持识图.",
      "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "run_actions", "description": "批量执行多个动作(一次决策多次操作, 省往返省token). actions为动作对象数组, 每个对象含 action 字段+该动作参数(同各单工具), 坐标用截图内像素; 支持 click/double_click/right_click/drag/mouse_down/mouse_up/scroll/type_text/press_key/key_down/key_up/combo/hotkey/wait/slide/switch_mode/set_config/take_screenshot.",
+    {"name": "move", "description": "只移动鼠标, 不点击(坐标=截图内像素). 单点给 x/y(可选 duration_ms 设整段耗时); 序列给 points=[[x,y],[x,y,duration_ms],...] 并用 gap_ms 设步间间隔. mode=smooth 平滑/instant 瞬移.",
+     "inputSchema": {"type": "object",
+                     "properties": {"x": {"type": "number"}, "y": {"type": "number"},
+                                    "mode": {"type": "string", "enum": ["smooth", "instant"]},
+                                    "duration_ms": {"type": "number", "description": "单次移动耗时(毫秒), 仅 smooth 生效"},
+                                    "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}},
+                                               "description": "坐标序列 [[x,y], [x,y,duration_ms], ...], 与 x/y 互斥"},
+                                    "gap_ms": {"type": "number", "description": "序列相邻两点的间歇(毫秒), 默认 0"}}}},
+    {"name": "zoom", "description": "放大观察: 以(x,y)[截图内像素]为中心放大一块屏幕区域(默认10X, NEAREST 插值), 返回放大图 + zoom_meta(screen_rect/factor/img_rect/seq). 把放大图里的像素交给 zoom_to_screen 即可换算回坐标.",
+     "inputSchema": {"type": "object",
+                     "properties": {"x": {"type": "number"}, "y": {"type": "number"},
+                                    "factor": {"type": "integer"}, "src": {"type": "integer"}}}},
+    {"name": "zoom_to_screen", "description": "把【最近一次 zoom 图像】里的像素(px,py, 图左上角为0,0)换算成坐标, 返回 screen_x/screen_y 与 img_x/img_y(click/move 直接用后者). 越界或还没 zoom 过会报错; 本工具不重新截图, 画面变化请重新 zoom.",
+     "inputSchema": {"type": "object",
+                     "properties": {"px": {"type": "number"}, "py": {"type": "number"}},
+                     "required": ["px", "py"]}},
+    {"name": "list_windows", "description": "列出当前可见顶层窗口(UIA 无障碍树, 文本). 含 hwnd/名称/类名/矩形/控件类型. 注意: 游戏/Canvas/自绘 UI 可能读不出内容, 这类场景请用 screenshot/zoom.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "run_actions", "description": "批量执行多个动作(一次决策多次操作, 省往返省token). actions为动作对象数组, 每个对象含 action 字段+该动作参数(同各单工具), 坐标用截图内像素; 支持 click/double_click/right_click/drag/mouse_down/mouse_up/scroll/type_text/press_key/key_down/key_up/combo/hotkey/wait/slide/move/zoom_to_screen/switch_mode/set_config/take_screenshot.",
      "inputSchema": {"type": "object",
                      "properties": {"actions": {"type": "array",
                                                 "items": {"type": "object"}}},
@@ -157,8 +201,27 @@ def _run_single(action: dict) -> dict:
     act = action.get("action") or action.get("name")
     try:
         if act == "click":
-            svc.click(_img_x(action.get("x", 0)), _img_y(action.get("y", 0)),
-                      action.get("button", "left"), int(action.get("clicks", 1)))
+            kw = {"button": action.get("button", "left"),
+                  "clicks": int(action.get("clicks", 1)),
+                  "hold_ms": float(action.get("hold_ms", 0)),
+                  "gap_ms": float(action.get("gap_ms", 0))}
+            if action.get("points"):
+                return svc.click(points=_img_points(action["points"]), **kw)
+            return svc.click(_img_x(action.get("x", 0)), _img_y(action.get("y", 0)), **kw)
+        elif act == "move":
+            mode = action.get("mode", "smooth")
+            dur = action.get("duration_ms")
+            if action.get("points"):
+                return svc.move(points=_img_points(action["points"]),
+                                gap_ms=float(action.get("gap_ms", 0)),
+                                mode=mode, duration_ms=dur)
+            return svc.move(_img_x(action.get("x", 0)), _img_y(action.get("y", 0)),
+                            mode=mode, duration_ms=dur)
+        elif act == "zoom_to_screen":
+            r = svc.zoom_to_screen(action["px"], action["py"])
+            r["img_x"], r["img_y"] = _to_img_xy(r["screen_x"], r["screen_y"])
+            r["note"] = "click/move 请用 img_x/img_y(截图内像素)"
+            return r
         elif act == "double_click":
             svc.click(_img_x(action["x"]), _img_y(action["y"]), clicks=2)
         elif act == "right_click":
@@ -224,6 +287,26 @@ def handle_tool_call(name: str, args: dict) -> dict:
             st = svc.get_state()
             st["cursor"] = _img_cursor(st["cursor"])
             return _text_result(json.dumps(st, ensure_ascii=False))
+        if name == "zoom":
+            x, y = args.get("x"), args.get("y")
+            sx, sy = (_img_x(x), _img_y(y)) if (x is not None and y is not None) else (None, None)
+            jpeg, meta = svc.zoom_tool(sx, sy, args.get("factor", 10), args.get("src", 100))
+            model_meta = {
+                "seq": meta["seq"], "factor": meta["factor"],
+                "out_size": meta["out_size"],
+                "screen_rect": meta["screen_rect"],
+                "img_rect": _to_img_rect(meta["screen_rect"]),
+                "hint": "把放大图里的像素(px,py)交给 zoom_to_screen, 用它返回的 img_x/img_y 再调 click/move",
+            }
+            return _image_result(base64.b64encode(jpeg).decode(), "image/jpeg",
+                                 "zoom_meta: " + json.dumps(model_meta, ensure_ascii=False))
+        if name == "zoom_to_screen":
+            r = svc.zoom_to_screen(args["px"], args["py"])
+            r["img_x"], r["img_y"] = _to_img_xy(r["screen_x"], r["screen_y"])
+            r["note"] = "click/move 请用 img_x/img_y(截图内像素); 画面已变化请重新 zoom"
+            return _text_result(json.dumps(r, ensure_ascii=False))
+        if name == "list_windows":
+            return _text_result(svc.describe_windows())
         if name == "run_actions":
             results = [_run_single(a) for a in args.get("actions", [])]
             return _text_result(json.dumps({"ok": True, "results": results}, ensure_ascii=False))
