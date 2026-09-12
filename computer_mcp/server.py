@@ -536,6 +536,13 @@ def handle_message(msg: dict) -> dict | None:
 
 
 def main():
+    # Windows 下 Python 的 stdio 默认走 locale 编码(GBK), 而 MCP 客户端按 UTF-8 收发:
+    # 不统一就会让"中文工具描述"和"中文参数/返回值"全部乱码(所以 stdin 也要设)。
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+    except (AttributeError, ValueError, OSError):
+        _logger.warning("stdio 重配置为 UTF-8 失败, 中文可能乱码")
     _logger.info("MCP computer server v3 启动(坐标契约 coord=image|screen + %d 个工具)", len(TOOLS))
     for line in sys.stdin:
         line = line.strip()
