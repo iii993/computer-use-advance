@@ -78,6 +78,8 @@ SYSTEM_PROMPT = """你是电脑操控 AI。你通过截图观察屏幕, 调用�
 {"action":"click","points":[[x,y],[x,y,hold_ms],...],"gap_ms":300}         依次点击多个位置, 点间停 gap_ms 毫秒
 {"action":"zoom","x":..,"y":..,"factor":10}      放大观察目标附近(10X, 约120x120像素)
 {"action":"zoom_to_screen","px":..,"py":..}      把最近一次放大图里的像素换成坐标(img_x/img_y 可直接用于点击)
+{"action":"focus_window","title":"记事本"}        把窗口激活到前台(hwnd 或 title 二选一)
+{"action":"send_text","text":"...","submit":"ctrl+enter"} 输入文字并提交(注意: 多数 GUI 里单独 enter 只换行)
 {"action":"finish","result":"任务完成说明"}       完成任务
 规则:
 - actions 数组按顺序执行, 可一次返回多个动作(减少往返)
@@ -300,6 +302,14 @@ class AIController:
                         "note": "AI 模式暂不返回放大图(动作级图像未接入), 需要看图请用 take_screenshot"}
             elif act == "zoom_to_screen":
                 return {"ok": True, **svc.zoom_to_screen(action["px"], action["py"])}
+            elif act == "focus_window":
+                return svc.focus_window(hwnd=action.get("hwnd"), title=action.get("title"))
+            elif act == "send_text":
+                _keys = action.get("submit_keys") or action.get("submit")
+                if isinstance(_keys, str):
+                    _keys = [p for p in _keys.replace("+", " ").replace(",", " ").split() if p]
+                return svc.send_text(action.get("text", ""), submit_keys=_keys,
+                                     clear_first=bool(action.get("clear_first", False)))
             elif act == "double_click":
                 svc.click(action.get("x", 0), action.get("y", 0), clicks=2)
             elif act == "right_click":

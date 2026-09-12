@@ -26,5 +26,36 @@ class TestConstants(unittest.TestCase):
         self.assertEqual(uia.CONTROL_TYPES[50033], "Pane")
 
 
+class TestFindWindow(unittest.TestCase):
+    """find_window 的匹配逻辑(不初始化 COM: 直接构造实例并替换 list_windows)。"""
+
+    WINDOWS = [
+        {"hwnd": 1, "name": "记事本", "class": "Notepad", "win32_title": "无标题 - 记事本",
+         "rect": (0, 0, 100, 100)},
+        {"hwnd": 2, "name": "Chrome", "class": "Chrome_WidgetWin_1", "win32_title": "百度一下"},
+        {"hwnd": 3, "name": "", "class": "EVERYTHING", "win32_title": "Everything"},
+    ]
+
+    def _u(self):
+        u = uia.UIA.__new__(uia.UIA)          # 绕过 __init__, 避免真实 COM
+        u.list_windows = lambda *a, **k: list(self.WINDOWS)
+        return u
+
+    def test_match_by_name_substring(self):
+        self.assertEqual(self._u().find_window(title="记事")["hwnd"], 1)
+
+    def test_match_by_win32_title_when_name_empty(self):
+        self.assertEqual(self._u().find_window(title="everything")["hwnd"], 3)
+
+    def test_match_is_case_insensitive(self):
+        self.assertEqual(self._u().find_window(title="CHROME")["hwnd"], 2)
+
+    def test_match_by_hwnd(self):
+        self.assertEqual(self._u().find_window(hwnd=2)["hwnd"], 2)
+
+    def test_no_match_returns_none(self):
+        self.assertIsNone(self._u().find_window(title="不存在的窗口"))
+
+
 if __name__ == "__main__":
     unittest.main()

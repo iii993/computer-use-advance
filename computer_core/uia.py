@@ -78,6 +78,14 @@ _user32.GetWindowTextLengthW.restype = c_int
 _user32.GetWindowTextLengthW.argtypes = [c_void_p]
 _user32.GetWindowTextW.restype = c_int
 _user32.GetWindowTextW.argtypes = [c_void_p, ctypes.c_wchar_p, c_int]
+_user32.IsIconic.restype = c_bool
+_user32.IsIconic.argtypes = [c_void_p]
+_user32.ShowWindow.restype = c_bool
+_user32.ShowWindow.argtypes = [c_void_p, c_int]
+_user32.SetForegroundWindow.restype = c_bool
+_user32.SetForegroundWindow.argtypes = [c_void_p]
+
+SW_RESTORE = 9          # ShowWindow: 还原并激活最小化窗口
 
 
 def _vtable(obj) -> POINTER(c_void_p):
@@ -195,3 +203,30 @@ class UIA:
                 f"[{i}] hwnd={w['hwnd']} type={w.get('control_type_name','?')} "
                 f"rect={w.get('rect')} class={w.get('class','')!r} name={name!r}")
         return "\n".join(lines) if lines else "(未发现可见顶层窗口)"
+
+    # ---- 窗口查找与激活 ----
+    def find_window(self, hwnd=None, title=None) -> dict | None:
+        """按 hwnd 或标题子串(不区分大小写, 匹配 name/win32_title/class)找一个可见顶层窗口。"""
+        if hwnd is None and not title:
+            return None
+        for w in self.list_windows():
+            if hwnd is not None and int(w.get("hwnd") or 0) == int(hwnd):
+                return w
+            if title:
+                hay = " ".join(str(w.get(k, "")) for k in ("name", "win32_title", "class")).lower()
+                if str(title).lower() in hay:
+                    return w
+        return None
+
+    def focus(self, hwnd) -> bool:
+        """把窗口激活到前台(最小化时先还原)。返回是否成功。
+
+        注意: 目标窗口若以管理员权限运行, 普通权限进程调用会失败(Windows 限制)。
+        """
+        h = c_void_p(int(hwnd))
+        try:
+            if _user32.IsIconic(h):
+                _user32.ShowWindow(h, SW_RESTORE)
+            return bool(_user32.SetForegroundWindow(h))
+        except OSError:
+            return False

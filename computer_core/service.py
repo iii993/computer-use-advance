@@ -256,12 +256,54 @@ class ComputerService:
         return {"screen_x": sx, "screen_y": sy,
                 "seq": meta.get("seq"), "factor": meta.get("factor")}
 
-    def describe_windows(self, max_items: int = 30) -> str:
-        """列出可见顶层窗口(UIA 无障碍树, 文本)。"""
+    def _uia_session(self):
+        """惰性创建 UIA 会话(COM STA: 必须在同一线程内使用)。"""
         if self._uia is None:
             from computer_core.uia import UIA
             self._uia = UIA()
-        return self._uia.format_windows(max_items)
+        return self._uia
+
+    def describe_windows(self, max_items: int = 30) -> str:
+        """列出可见顶层窗口(UIA 无障碍树, 文本)。"""
+        return self._uia_session().format_windows(max_items)
+
+    def focus_window(self, hwnd=None, title=None) -> dict:
+        """把指定窗口激活到前台(按 hwnd 或标题子串)。返回 {ok, hwnd, name, class, rect}。"""
+        if hwnd is None and not title:
+            raise ValueError("focus_window 需要 hwnd 或 title 之一")
+        u = self._uia_session()
+        rec = u.find_window(hwnd=hwnd, title=title)
+        if rec is None:
+            cands = [f"{w.get('hwnd')}:{w.get('name') or w.get('win32_title')}"
+                     for w in u.list_windows()[:10]]
+            return {"ok": False,
+                    "error": f"未找到窗口 (hwnd={hwnd}, title={title!r}); 当前候选: {cands}"}
+        ok = u.focus(rec["hwnd"])
+        log.info("focus_window hwnd=%s title=%r -> ok=%s", rec["hwnd"], title, ok)
+        return {"ok": bool(ok), "hwnd": rec["hwnd"],
+                "name": rec.get("name") or rec.get("win32_title"),
+                "class": rec.get("class"), "rect": rec.get("rect")}
+
+    def send_text(self, text: str, submit_keys: list | None = None,
+                  clear_first: bool = False) -> dict:
+        """向当前聚焦的控件输入文字, 可选地按组合键提交。
+
+        - text: 要输入的文字(中文/长文本走剪贴板, 见 input_engine.text)
+        - submit_keys: 提交组合键, 如 ["ctrl", "enter"]; 很多应用里单独 enter 只换行
+        - clear_first: 先 Ctrl+A 全选再删除, 清掉输入框里的旧内容
+        """
+        tcfg = self.config.get("work", {}).get("typing", {})
+        from input_engine import text as text_engine
+        if clear_first:
+            keyboard.combo(["ctrl", "a"])
+            keyboard.tap("delete")
+        text_engine.type_text(text or "", tcfg)
+        if submit_keys:
+            keyboard.combo(list(submit_keys))
+        log.info("send_text len=%d submit=%s clear_first=%s",
+                 len(text or ""), submit_keys, clear_first)
+        return {"ok": True, "text_len": len(text or ""),
+                "submit_keys": list(submit_keys) if submit_keys else None}
 
     # ---------- 模式 ----------
     def switch_mode(self, mode: str):
