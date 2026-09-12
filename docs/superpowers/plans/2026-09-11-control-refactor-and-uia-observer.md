@@ -1487,6 +1487,7 @@ git commit -m "新增:MCP 工具 move/zoom/zoom_to_screen/list_windows, click �
 | 放大镜多屏 | 未验证 | `clamp_region` 目前按单屏尺寸;多屏负坐标(`rect=(-8,-8,...)` 已在实测中出现)可能夹取错误。**反算受同一问题影响**(screen_rect 本身就可能夹错) | 需要时用 `SM_XVIRTUALSCREEN`/`SM_CXVIRTUALSCREEN` 取虚拟屏边界 |
 | 反算的时效性 | 已知局限(设计如此) | `zoom_to_screen` 用的是"最近一次 zoom"的映射,期间画面/窗口位置变化会让结果过时;并发调用时后一次 zoom 会覆盖前一次 | 工具描述与 AI 动作表已写明"画面变化要重新 zoom";不做自动失效检测(需要屏幕哈希,成本高) |
 | AI 模式 zoom 无图像 | 已知限制 | `ai_mode` 的动作级结果只回文本, 放大图进不了对话;该动作返回 meta + 提示 | 需要看图用 `take_screenshot`, 或走 MCP 通道的 `zoom` |
+| UIA 元素引用泄漏 | 已知(审查发现) | `element_from_hwnd` 取到的 `IUIAutomationElement` 从不 `Release`,每次枚举每个窗口泄漏一个对象 | 需要时按同一方法验证 `IUnknown::Release`(idx=2)后补上;当前单次 `list_windows` 的泄漏量可忽略 |
 | 侧键被驱动映射 | 环境相关 | 部分鼠标厂商驱动把 x1/x2 硬映射为前进/后退 | 文档说明即可,无法绕过 |
 
 **风险**:UIA 通道对 Electron/Chromium 应用(实测里 `Chrome_WidgetWin_1`)的**控件树**深度有限,且需要应用开启无障碍支持。**游戏/Canvas 场景必须回退到截图 + 放大镜**。
@@ -1497,7 +1498,7 @@ git commit -m "新增:MCP 工具 move/zoom/zoom_to_screen/list_windows, click �
 
 **已自动验证(以实测输出为准):**
 
-- [x] `python -m unittest discover tests -v` 全绿 —— **41 tests OK**(mouse 18 / service 7 / observe 13 / uia 3)
+- [x] `python -m unittest discover tests -v` 全绿 —— **48 tests OK**(mouse 18 / service 11 / MCP 分派 3 / observe 13 / uia 3)
 - [x] 旧调用 `svc.click(x, y, button="right", clicks=2)` 与 `mouse.click("right", 100, 200)` 行为不变(单测覆盖;`ComputerService().get_state()` 正常返回)
 - [x] `svc.click()`(无坐标)不产生任何移动调用;`svc.move()` 不产生任何点击调用
 - [x] `points` 与 `x`/`y`/`at` 同时传入抛 `ValueError`;空列表、长度为 1/4 的元素、非数字、`gap_ms<0`、三元时间值越界都抛 `ValueError`
@@ -1588,5 +1589,18 @@ python main.py
 5. **`zoom`/`list_windows` 在 `handle_tool_call` 特判**(返回图像/整段文本),不走 `_run_single`;`move`/`click`/`zoom_to_screen` 走统一执行器,因此 `run_actions` 里也能批量调用 `move`/`zoom_to_screen`。
 6. **AI 模式的 `zoom` 只回元数据**,放大图未接入动作级对话(见 §5)。
 7. **新增 `tests/__init__.py`**,让 `python -m unittest discover tests` 与 `python -m unittest tests.test_xxx` 两种方式都能跑。
+
+**审查后修复(2026-09-11, commit `cd462d5`;由独立只读审查子代理过了一遍全部 diff):**
+
+| # | 缺陷 | 修法 |
+|---|---|---|
+| 1 | MCP/AI 的 `click` 省略坐标时走 `action.get("x", 0)`, 会真的移到 (0,0) 再点, 与工具描述承诺的"原地点击"矛盾 | 坐标任一缺失即调 `svc.click(**kw)`(不传位置参数), 原地点击 |
+| 2 | `svc.click(move_mode="smooth")` 丢掉了 `duration_ms`, 平滑定位耗时不可控 | `service.click` 增加 `duration_ms` 并透传给 `mouse.move`;MCP `click` schema 同步暴露 `move_mode`/`duration_ms` |
+| 3 | 服务层缺校验: 单点路径接受 `gap_ms<0`、只给 x 或只给 y 会静默原地点击、`points` 与 `x/y` 同给时静默取 points | 服务层统一抛 `ValueError`(三条校验) |
+| 4 | `zoom_to_screen` 的 `img_x/img_y` 依赖"最近一次截图尺寸", 模型无法判断口径 | 返回值补 `img_size`, note 改为"img_x/img_y 是 img_size 口径的截图坐标" |
+
+新增 `tests/test_mcp_dispatch.py`(3 个用例, 直接验证 MCP 分派, 用 mock 不真的点击)。测试总数 41 → **48**。
+
+**审查发现但未修(已记入 §5):** UIA 元素引用未 `Release`、BSTR 未 `SysFreeString`、`CoUninitialize` 未调用 —— 均为泄漏类问题, 单次会话量级可忽略, 需要时按实测索引补。
 
 **实测环境**: Python 3.14.3 / Pillow 12.3.0 / pynput 1.8.2 / 屏幕 1920×1080 / DSH `danger-full-access`。
