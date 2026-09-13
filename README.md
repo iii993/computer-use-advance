@@ -1,316 +1,108 @@
-# 电脑操控插件 (Computer Control Plugin) - 使用说明
+# computer-use-advance
 
-一个 Windows 电脑操控插件: 提供 **游戏 / 绘画 / 工作** 三种操控模式 + **AI 指挥官** 自动模式,
-支持全局热键切换、触笔压力模拟。
+把 **Windows 电脑操控**能力挂进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 **DSH 插件**。
+挂上之后 agent 就能: 截图观察、移动/点击鼠标、敲键盘、枚举与激活窗口、切换输入法, 还能驱动 **Krita** 画画。
 
-> ⚠️ **本仓库有两套用法, 别混淆 —— 它们互相独立**:
->
-> | 用法 | 给谁用 | 怎么启动 | 你会看到什么 |
-> | --- | --- | --- | --- |
-> | **桌面程序** | **人** | `python main.py`(见第 4 节) | **系统托盘图标** + 全局热键 `Ctrl+Shift+1/2/3/0` + 画布窗口 |
-> | **DSH 插件** | **AI agent** | 挂进 DSH profile(见第 9 节) | 无界面: agent 多出 28 个 `mcp__computer__*` 工具 |
->
-> 只挂 DSH 插件**不会**出现托盘和热键(那些是 `main.py` 提供的); 反之只跑 `main.py` 也**不会**给 agent 提供工具。
+> ⚠️ 本仓库**只包含给 AI 用的 MCP 部分** —— 它是一个**没有界面**的后台服务。
+> **不提供托盘图标和全局热键**: 那是"给人用"的另一种程序形态(`main.py` + `ui/`), 已从本仓库移除。
 
 ---
 
-## 1 功能总览
+## 1 安装
 
-| 模式 | 热键 | 功能 |
-| --- | --- | --- |
-| 🎮 游戏模式 | `Ctrl+Shift+1` | 按键宏(连点/按住/组合) + 鼠标直线滑动(带高斯抖动/弓形弯曲防检测) |
-| 🎨 绘画模式 | `Ctrl+Shift+2` | 曲线绘制(控制点系统) + `Alt+滚轮`调画笔 + 触笔压力注入 + 演示画布 |
-| 💼 工作模式 | `Ctrl+Shift+3` | 文字输入(自然节奏) + 简单点击 + 简化快捷键 |
-| 🤖 AI 模式 | 托盘 → `"🤖 AI 任务"` | 截图→模型决策→自动切换三模式执行任务 |
-| 退出 | `Ctrl+Shift+0` | 安全退出插件 |
-
-> 所有热键与参数可在 `config.json` 中修改(首次运行自动生成)。
-
----
-
-## 2 环境要求
-
-- Windows 10/11
-- Python 3.10+ (开发环境为 3.14)
-- 依赖(自动安装到项目 `vendor` 目录, 不占 C 盘): `pynput` `keyboard` `pystray` `Pillow`
-
----
-
-## 3 安装
-
-### 方式一: 一键安装(推荐)
-
-```bash
-cd H:\cu-a
-python -m pip install --target vendor pynput keyboard pystray Pillow
-```
-
-> 国内源不可用时直接用官方源: `python -m pip install --target vendor pynput keyboard pystray Pillow`
-> 全部为纯 wheel 包, 无需编译。
-
-### 方式二: 已打包
-
-如果 `vendor/` 目录已存在依赖, 直接跳过安装步骤。
-
----
-
-## 4 快速开始
-
-```bash
-cd H:\cu-a
-python main.py
-```
-
-启动后:
-1. 系统托盘出现蓝色图标
-2. 全局热键 `Ctrl+Shift+1/2/3` 切换三模式
-3. 托盘右键菜单可: 切换模式 / 打开绘画画布 / AI 任务 / 退出
-
----
-
-## 5 🎮 游戏模式使用
-
-### 按键宏
-
-在 `config.json` 的 `game.macros` 中配置, 支持 4 种类型:
-
-| type | 说明 | 参数 |
-| --- | --- | --- |
-| `tap_repeat` | 连点 | `key`(按键), `times`(次数) |
-| `hold` | 按住一段时间 | `key`, `duration_ms`(毫秒) |
-| `slide` | 相对滑动(带抖动) | `dx`, `dy`(像素) |
-| `combo` | 组合键 | `keys`(["ctrl","c"]) |
-
-示例:
-
-```json
-"macros": {
-    "连点攻击": {"hotkey": "f6", "type": "tap_repeat", "key": "space", "times": 3},
-    "视角左拉": {"hotkey": "f7", "type": "slide", "dx": -250, "dy": 0},
-    "视角右拉": {"hotkey": "f8", "type": "slide", "dx": 250, "dy": 0},
-    "复制粘贴": {"hotkey": "f9", "type": "combo", "keys": ["ctrl", "c"]}
-}
-```
-
-### 直线滑动(防检测)
-
-- 高斯抖动: 每个中间点叠加随机偏移(`jitter_px`, 默认 2.0px)
-- 弓形弯曲: 轨迹呈轻微弧线(`curve_bend`, 默认 0.06)
-- 加速-减速曲线: 起止慢、中间快, 模拟真人移动
-
----
-
-## 6 🎨 绘画模式使用
-
-### 打开演示画布
-
-托盘菜单 → `"🖼 打开绘画画布"`
-
-### 画布操作
-
-| 操作 | 效果 |
-| --- | --- |
-| 手绘曲线 | 松开鼠标后自动 RDP 简化为控制点 |
-| 拖动控制点 | 实时调整曲线形状 |
-| 点击空白处 | 在最近线段插入新控制点 |
-| 双击控制点 | 删除该控制点 |
-| `空格` | 重放曲线(注入外部软件) |
-| `Esc` | 清空画布 |
-
-### 画笔大小
-
-- `Alt+鼠标滚轮` 调整(上滚增大, 下滚减小, 默认每格 2px)
-- 范围 1~200px, 悬浮指示器跟随鼠标显示当前大小, 3 秒无操作自动隐藏
-
-### 触笔压力模拟
-
-- `P` 键切换 鼠标输入 / 笔输入(压力) 通道
-- 压力映射: **画得慢 → 重压**(线条粗), **画得快 → 轻扫**(线条细)
-- 压力范围 0~1024, 经 4 点移动平均防抖
-- 笔通道通过 `WM_POINTER` 消息注入目标窗口(对 Win32 绘图软件有效)
-- 部分软件需开启自带"鼠标模拟压力"选项获得完整压感
-
-### 曲线重放注入
-
-画布按 `空格` 后: 曲线按真实速度+压力重放
-- 笔通道: WM_POINTER 压力注入(带压感)
-- 鼠标通道: 按住左键拖动
-
----
-
-## 7 💼 工作模式使用
-
-### 简化快捷键(预置)
-
-| 名称 | 组合 |
-| --- | --- |
-| copy | `Ctrl+C` |
-| paste | `Ctrl+V` |
-| cut | `Ctrl+X` |
-| undo | `Ctrl+Z` |
-| select_all | `Ctrl+A` |
-| switch_win | `Alt+Tab` |
-| show_desktop | `Win+D` |
-| lock | `Win+L` |
-
-### 文字输入
-
-- 英文/符号: 逐字符输入, 随机延迟(40~120ms) + 词间停顿, 模拟自然打字
-- 中文/长文本(>20字符): 自动走剪贴板粘贴, 保持节奏
-
-### 点击操作
-
-- 单击 / 双击 / 右键 / 拖拽(均由 AI 或脚本调用)
-
----
-
-## 8 🤖 AI 指挥官模式使用
-
-### 开启方式
-
-托盘菜单 → `"🤖 AI 任务"` → 输入任务描述 → 点`"▶ 开始执行"`
-
-例如: `"打开计算器, 计算 3+5"` 或 `"在画布上画一条 S 形曲线"`
-
-### 模型配置(默认与 DSH 对话相同)
-
-```json
-"ai": {
-    "base_url": "https://api.deepseek.com",  // 默认与 DSH 对话相同(deepseek-official)
-    "api_key": "",                            // 留空自动读 DSH 凭据/环境变量
-    "model": "deepseek-v4-flash-vision-exp",  // 默认与 DSH 对话相同(支持视觉)
-    "max_steps": 20,                            // 单任务最大步数
-    "screenshot_scale": 1.0,                    // 1.0=原始分辨率, 坐标与屏幕一致
-    "screenshot_quality": 60                    // JPEG 质量
-}
-```
-
-密钥解析链: `config.json → 环境变量(DEEPSEEK_API_KEY/TOKENRHYTHM_API_KEY) → DSH 凭据文件(.credentials.yaml)`
-
-### 对齐 codex computer-use 架构的改进
-
-- **批量动作**: 模型一次返回 {"actions":[...]}, 全部执行后再截图反馈(减少API往返5-10倍)
-- **滑动窗口上下文**: 截图只保留最近3轮, 历史动作用文本记录(防上下文爆炸)
-- **细粒度动作**: wait/scroll/mouse_down/key_down/hotkey 等19种动作
-- **解析容错**: 输出无法解析时把错误回传模型修正
-- **坐标直用**: 截图原始分辨率, 模型坐标与真实屏幕一致, 免换算
-
-### 识图能力检测(强制)
-
-启动任务前自动发送 1x1 测试图:
-- API 接受图像输入 → `✅ 通过`, 开始任务循环
-- API 拒绝(400/404/422) → `❌ 报错禁用`, 提示换支持视觉的模型
-
-### 执行流程
-
-```
-任务输入 → 识图检测 → [截图 → 模型决策(批量动作JSON) → 批量执行 → 截图反馈] 循环 → 完成/超步数
-```
-
-### 模型可用动作
-
-| 动作 | 参数 |
-| --- | --- |
-| click / double_click / right_click | x, y;click 另支持 hold_ms(按压时长 0~5000)、button 侧键 x1/x2、points+gap_ms(坐标序列) |
-| move | x, y, mode(smooth/instant), duration_ms(整段耗时);序列 points=[[x,y],[x,y,耗时]], gap_ms |
-| drag / mouse_down / mouse_up | 坐标/拖拽/按放 |
-| scroll | x, y, dy (滚轮) |
-| wait | seconds |
-| key_down / key_up / hotkey | key / keys |
-| type_text | text |
-| press_key | key |
-| combo | keys |
-| slide | dx, dy |
-| zoom / zoom_to_screen | 放大观察 x, y, factor(默认10X);像素反算 px, py(返回的 img_x/img_y 可直接给 click/move) |
-| focus_window | hwnd 或 title(把目标窗口激活到前台) |
-| send_text | text, submit(如 "ctrl+enter"), clear_first(输入并提交, 解决"Enter 只换行") |
-| switch_mode | game / draw / work |
-| set_config | key, value (仅白名单) |
-| finish | result |
-
-### 模型自改配置(白名单)
-
-AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
-
-```json
-"whitelist": [
-    "mouse.jitter_px", "mouse.move_steps", "mouse.move_interval_ms",
-    "game.tap_interval_ms", "game.slide.jitter_px", "game.slide.smooth_ms",
-    "draw.brush.step", "draw.replay_interval_ms",
-    "work.typing.delay_min_ms", "work.typing.delay_max_ms"
-]
-```
-
-白名单外的键一律拒绝, 防止模型破坏配置结构。
-
----
-
-## 9 🔌 DSH MCP 插件集成
-
-> ✅ **已于 2026-09-12 重新挂载到 DSH**(computer + krita 两个 MCP)。
-> 注册位置: `H:\dsh-home\profiles\web\cordis.patch.yml` 里的 `mcp-computer` / `mcp-krita` 两个 insert 块。
-> **保存即热加载**(cordis HMR):无需重启 DSH web,实测约 8 秒内新子进程起来、工具列表刷新。
-> (2026-09-06 曾因"agent 场景作用有限"卸下;补齐坐标契约与高层工具后重新挂回。)
-### 作为可分发的 DSH 插件(`computer-use-advance`)
-
-本仓库根目录同时就是一个**标准 DSH 插件包** —— 别人 clone 下来两条命令就能挂上:
+### 从 GitHub 安装(推荐)
 
 ```powershell
 # 1) 装包(dsh plugin 只是把参数转发给 profile 目录里的 pnpm)
 dsh plugin --profile web add github:iii993/computer-use-advance
 
-# 2) 启用: 在 profile 的 package.json 里把 "computer-use-advance" 加进 dsh.profile.bundles
+# 2) 启用: 把 "computer-use-advance" 加进 profile 的 package.json -> dsh.profile.bundles
 #    路径: $DSH_HOME/profiles/web/package.json
 
-# 3) 换机器/换路径时, 先跑一次安装脚本自动改写 python 与仓库路径
+# 3) 重启 DSH(改动 profile 配置也会触发 cordis HMR 热加载)
+```
+
+### 从本地目录安装
+
+```powershell
+dsh plugin --profile web add file:H:/cu-a
+```
+
+### 换机器 / 换路径
+
+`cordis.patch.yml` 里的 python 与仓库路径是绝对路径。换机器跑一次即可自动改写:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+### 这个包由什么组成
 
 | 文件 | 作用 |
 | --- | --- |
 | `package.json` | `dsh.bundle.patch` 指向 patch —— `dsh plugin add` 靠这个字段识别它是插件 |
 | `cordis.patch.yml` | 向 profile 插入 `mcp-computer` / `mcp-krita` 两个 mcp-client 条目 |
 | `lib/index.js` | 空壳: 工具 schema 只在 `computer_mcp/server.py` 维护一份, 不在 JS 里重写 |
-| `install.ps1` | 探测本机 python 与仓库路径, 自动改写 patch 里的路径 |
-
-> 原理: `dsh plugin add <包>` 只是把参数转发给 profile 目录里的 `pnpm add`;真正拉起
-> Python 进程、注册工具的是官方的 `@deepseek-ai/dsh-mcp-client`。
-
-
-现在 agent 可直接调用以下工具(**不需要写脚本**):
-
-| 工具 | 用途 |
-| --- | --- |
-| `mcp__computer__screenshot` | 截取全屏(返回图像) |
-| `mcp__computer__get_state` | 当前模式/光标/画笔 |
-| `mcp__computer__click` / `drag` / `slide` | 鼠标操作;click 支持 hold_ms 按压时长、侧键 x1/x2、points 坐标序列 |
-| `mcp__computer__move` | 只移动不点击, 支持 duration_ms 与 points+gap_ms |
-| `mcp__computer__zoom` / `zoom_to_screen` | 10X 放大镜观察(返回图像) + 放大图像素换算回坐标 |
-| `mcp__computer__list_windows` | UIA 无障碍树窗口清单(文本) |
-| `mcp__computer__focus_window` | 按 hwnd/标题把窗口激活到前台 |
-| `mcp__computer__send_text` | 输入文字并按组合键提交(如 ctrl+enter) |
-| `mcp__computer__get_input_method` | 查当前输入法(中文输入法会吞掉注入的按键) |
-| `mcp__computer__switch_input_method` | 切换输入法(**游戏/连发前必须先切 en**) |
-| `mcp__computer__type_text` / `press_key` / `combo` | 键盘输入 |
-| `mcp__computer__switch_mode` | 切换 game/draw/work 模式 |
-| `mcp__computer__draw_curve` / `set_brush` | 绘画操作 |
-| `mcp__computer__set_config` | 白名单内改配置 |
-| `mcp__computer__check_vision` | 检测模型识图能力 |
-
-> 📘 **完整接口文档(坐标契约 / 28 个工具逐个说明 / Python API / 新增工具步骤)见 [docs/MCP接口文档.md](docs/MCP接口文档.md)。**
-> 当前工具数 **28**;所有坐标工具支持 `coord=image|screen`(缺省 image=最近一次截图内的像素),返回值会回显口径。
-
-### 绘画 MCP(krita)
-
-`mcp__krita__*`:画布/图层/图形/压感曲线/液化涂抹/导出/看图。**需要 Krita 在运行且已装 `krita_mcp` 桥接插件**;未运行时调用会返回"Could not reach the Krita MCP bridge",这是预期行为。
+| `install.ps1` | 探测本机 python 与仓库路径并自动改写 patch |
 
 ---
 
-## 🔧 配置文件全参数 (config.json)
+## 2 工具清单(28 个)
+
+挂载后 agent 会多出这些工具(前缀 `mcp__computer__*` / `mcp__krita__*`):
+
+| 工具 | 用途 |
+| --- | --- |
+| `screenshot` | 截取全屏(返回图像) |
+| `get_state` | 当前模式 / 光标位置 / 坐标口径 |
+| `zoom` / `zoom_to_screen` | 10X NEAREST 放大镜观察 + 放大图像素换算回坐标 |
+| `list_windows` | UIA 无障碍树窗口清单(支持 `title` 过滤与 `wait_seconds` 轮询) |
+| `focus_window` | 按 hwnd / 标题激活窗口(**轮询确认前台真正切换完成**才报成功) |
+| `click` / `drag` / `slide` | 鼠标操作; click 支持 `hold_ms` 长按、侧键 x1/x2、`points` 坐标序列 |
+| `move` | 只移动不点击, 支持 `duration_ms` 与 `points`+`gap_ms` |
+| `scroll` | 移动到指定位置后滚轮 |
+| `press_key` / `key_down` / `key_up` / `combo` | 键盘按键与组合键 |
+| `type_text` / `send_text` | 输入文字 / 输入并按组合键提交(如 ctrl+enter) |
+| `get_input_method` / `switch_input_method` | **查/切输入法** —— 中文输入法会吞掉注入的按键 |
+| `switch_mode` | 切换 game / draw / work 模式 |
+| `draw_curve` / `draw_pressure_curve` / `set_brush` | 绘画(曲线 / 压感 / 画笔) |
+| `liquify` / `smudge` | 液化 / 涂抹 |
+| `set_config` | 修改白名单内的配置项 |
+| `check_vision` | 检测当前模型是否支持图像输入 |
+| `run_actions` | 批量按顺序执行多个动作 |
+
+> 📘 完整接口文档(坐标契约 / 每个工具的参数与返回 / Python API / 新增工具步骤)见 [`docs/MCP接口文档.md`](docs/MCP接口文档.md)。
+
+### 坐标口径(重要)
+
+所有坐标类工具都支持 `coord=image|screen`:
+
+- `image`(默认): 坐标是**最近一次 `screenshot` 返回图像内**的像素
+- `screen`: 屏幕物理像素
+- 返回值会回显 `coord` / `img_size` / `screen_size`, 可随时核对
+
+---
+
+## 3 环境要求
+
+| 项 | 要求 |
+| --- | --- |
+| 系统 | Windows 10 / 11 |
+| Python | 3.10+(开发环境 3.14) |
+| 依赖 | `pynput`、`Pillow`(装到项目 `vendor/`, 不占 C 盘) |
+| Krita 部分 | Krita 需在运行, 且已装 `krita_mcp` 桥接插件 |
+
+```powershell
+cd H:\cu-a
+python -m pip install --target vendor pynput Pillow
+```
+
+---
+
+## 4 配置(config.json)
 
 | 路径 | 默认 | 说明 |
 | --- | --- | --- |
-| hotkeys.game / draw / work / quit | ctrl+shift+1/2/3/0 | 模式切换热键 |
 | mouse.move_steps | 24 | 直线移动插值步数 |
 | mouse.move_interval_ms | 5 | 每步间隔(ms) |
 | mouse.jitter_px | 1.2 | 移动抖动幅度(px) |
@@ -328,43 +120,52 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | draw.pen.slow_speed / fast_speed | 50/500 | 速度映射阈值(px/s) |
 | work.typing.delay_min_ms / delay_max_ms | 40/120 | 打字速度范围 |
 | work.typing.clipboard_threshold | 20 | 剪贴板输入阈值(字符) |
-| ai.base_url / model / api_key | 对话相同 | AI 模式模型配置 |
+| ai.base_url / model / api_key | 对话相同 | AI 识图模型配置(`check_vision` 用) |
 | ai.max_steps | 20 | AI 任务最大步数 |
-| ai.screenshot_scale / quality | 1.0/85 | 截图(1.0=原始分辨率不缩放) / JPEG质量 |
-| ai.whitelist | 10项 | 模型可修改的白名单 |
+| ai.screenshot_scale / quality | 1.0/85 | 截图缩放 / JPEG 质量 |
+| ai.whitelist | 10 项 | `set_config` 可修改的白名单 |
+
+> `hotkeys.*` 字段仍在 config.json 里, 但**已不生效** —— 全局热键属于已移除的桌面程序部分。
 
 ---
 
-## ❓ 常见问题 (FAQ)
-
-**Q: AI 任务提示"模型无识图能力"?**
-A: 当前配置的模型不支持图像输入。把 `ai.model` 换成支持视觉的模型(如 `deepseek-v4-flash-vision-exp` / qwen-vl 系列), 或检查 `ai.base_url` 是否可达。
+## 5 常见问题 (FAQ)
 
 **Q: DSH agent 调用 `screenshot` 报错?**
-A: DSH 对话模型不支持视觉时会收到 API 报错(正常现象)。在 DSH 设置中切换到支持视觉的模型即可。
+A: DSH 对话模型不支持视觉时会收到 API 报错(正常现象)。在 DSH 设置里切换到支持视觉的模型即可。也可先调 `check_vision` 自检。
+
+**Q: 调 `switch_input_method` 前要注意什么?**
+A: 中文(微软拼音)输入法会拦截注入的按键 —— 按键不进目标程序, 甚至吞掉 KeyUp 造成"卡键"(角色一直往一个方向走)。**玩游戏 / 连发按键前先 `switch_input_method(layout="en")`**, 并用 `get_input_method` 复查 `is_english=true`。
+
+**Q: `focus_window` 返回 ok 了, 按键还是打到别的窗口?**
+A: `SetForegroundWindow` 是**异步**的。本项目已改为轮询确认前台真正切换完成才报成功, 并在返回值里给出 `foreground` / `focus` 供核对。若仍打偏, 检查是否有别的程序抢占前台。
+
+**Q: 改了 Python 代码不生效?**
+A: MCP 子进程是常驻的。重启 DSH, 或在 profile 配置里改一处触发 cordis HMR 重载。
+
+**Q: 工具描述 / 中文参数乱码?**
+A: Windows 下 Python 的 stdio 默认走 GBK。patch 里已设 `PYTHONIOENCODING=utf-8`。
 
 **Q: 绘画压力注入外部软件没效果?**
-A: WM_POINTER 注入对 Win32 传统绘图软件有效; 对 Chrome/UWP 等现代应用无效。可在目标软件中开启"鼠标模拟压力"选项, 或改用鼠标通道(`P` 键)。
+A: WM_POINTER 注入对 Win32 传统绘图软件有效; 对 Chrome / UWP 等现代应用无效。可在目标软件中开启"鼠标模拟压力"选项。
 
-**Q: 热键被占用/想改热键?**
-A: 修改 `config.json` 的 `hotkeys` 段, 重启插件生效。
-
-**Q: 如何让 AI 改配置?**
-A: AI 通过 `set_config` 动作修改白名单内参数(见 `ai.whitelist`), 修改立即写入 config.json。
+**Q: 如何让 agent 修改配置?**
+A: 通过 `set_config` 工具修改白名单内参数(见 `ai.whitelist`), 修改立即写入 config.json。
 
 ---
 
-## 📂 项目结构
+## 6 项目结构
 
 ```
-main.py            入口: 托盘 + 全局热键 + 模式分发 + AI任务
-computer_core/     操控服务(截图/动作/白名单配置) + observe.py(10X放大镜/像素反算) + uia.py(UIA窗口观察)
-ai_mode/           AI 指挥官(识图检测 + 任务循环)
-computer_mcp/      MCP server(DSH 插件)
+computer_mcp/      MCP server(DSH 插件的入口, 28 个工具在这里注册)
+computer_core/     操控服务(截图 / 动作 / 白名单配置) + observe.py(10X 放大镜 / 像素反算) + uia.py(UIA 窗口观察)
+input_engine/      鼠标 / 键盘 / 文字 / 触笔压力注入 + ime.py(输入法控制)
+modes/             游戏 / 工作 模式(game/work 被 MCP 直接调用)
+ai_mode/           AI 指挥官(识图检测 + 任务循环, 被 MCP 调用)
+krita_mcp/         Krita 绘画桥接(MCP server + Krita 插件)
 utils/             配置 / 日志 / 几何算法(RDP)
-input_engine/      鼠标 / 键盘 / 文字 / 触笔压力注入
-modes/             游戏 / 绘画 / 工作 模式
-ui/                托盘 / 悬浮指示器 / 演示画布 / AI任务窗口
+docs/              接口文档
+tests/             unittest 测试套件
 config.json        全部配置(首次运行自动生成)
 vendor/            本地依赖(不入库)
 ```
@@ -373,5 +174,5 @@ vendor/            本地依赖(不入库)
 
 ## ⚠ 免责声明
 
-游戏模式的防检测抖动仅用于合规自动化场景(解放双手/辅助操作)。
+游戏模式的防检测抖动仅用于合规自动化场景(解放双手 / 辅助操作)。
 请遵守目标软件的服务条款与所在地区法律法规。
