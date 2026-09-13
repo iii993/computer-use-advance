@@ -195,20 +195,28 @@ sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 #### `list_windows`
 用 UIA 无障碍树列出当前可见顶层窗口,返回文本清单:`[序号] hwnd=... type=Window rect=(l,t,r,b) class='...' name='...'`。
 
-- 参数: 无
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| title | string | — | 只看标题匹配的窗口。匹配规则同 `focus_window`,且**只给最精确那一档** —— `title="Krita"` 不会把 `krita.e - Everything` 也列进来 |
+| wait_seconds | number | 0 | 还没有匹配窗口时轮询等待的秒数(**上限 60**),用于"刚启动程序,窗口还没注册" |
+
 - 用途: 不截图也知道有哪些窗口、在哪(`rect` 是屏幕坐标!)、句柄是多少(`hwnd` 可直接给 `focus_window`)
+- 无匹配时返回 `(没有匹配 'xxx' 的可见窗口)`
 - 坑: UIA 只对支持无障碍接口的程序有效(Win32 / WPF / WinForms / UWP / 大体上 Electron);**游戏、Canvas、自绘 UI 可能读出来是空的**,这类场景回到 `screenshot` + `zoom`
 
 #### `focus_window`
 把指定窗口激活到前台(最小化会先还原),之后可以直接 `type_text` / `send_text`,或用返回的 `rect` 算坐标去点击。
 
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| hwnd | number | 窗口句柄(来自 `list_windows`) |
-| title | string | 标题子串,不区分大小写,匹配 name / win32_title / class,取第一个命中 |
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| hwnd | number | — | 窗口句柄(来自 `list_windows`,**最精确**) |
+| title | string | — | 标题,不区分大小写。**匹配分级**: 完全相等 > 词边界(`文档 - Krita`) > 前缀 > 子串;name 权重高于 win32_title,并优先"有实际面积的窗口" |
+| wait_seconds | number | 0 | 轮询等待窗口出现的秒数(**上限 60**)。刚 `Start-Process` 拉起程序时窗口往往要几秒才注册,传 `wait_seconds=10` **一次调用即可**,不必自己反复 `list_windows` 重试 |
 
 - `hwnd` 与 `title` 二选一,都不给会报错
-- 返回: `{ok, hwnd, name, class, rect}`;失败时 `{ok:false, error}`,error 里带当前候选窗口列表
+- 返回: `{ok, hwnd, name, class, rect, attempts, waited_ms}`;失败时 `{ok:false, error, attempts, waited_ms}`,error 里带当前候选窗口列表与"等待 Ns 共尝试 M 次"
+- 实测: 已存在的窗口 `attempts=1, waited_ms≈90`(不空等);刚启动的记事本 `attempts=3, waited_ms≈1480` 抓到;标题不存在则 `wait_seconds=3` → `attempts=7, waited_ms≈3080`
+- 歧义: title 命中多个窗口时,返回值带 `other_candidates` 列表 —— 那种情况请改用 `hwnd`
 - 坑: ①目标窗口若以管理员权限运行,普通权限进程可能无法置前(Windows 限制),此时返回值会附 `note` 提示"可用 rect 直接点";②**置前成功 ≠ 输入框已聚焦**,通常还要 `click` 一下输入框再输入
 
 ### 5.2 鼠标类(全部坐标类)
@@ -511,7 +519,7 @@ python -m unittest tests.test_mouse_input -v
 | `tests/test_observe_zoom.py`(13) | 区域钳制、倍率预算、放大图像素反算与往返一致 |
 | `tests/test_uia_helpers.py`(7) | CLSID/IID、vtable 索引锁定、窗口匹配、focus 语义 |
 | `tests/test_coord_and_tools.py`(18) | 坐标口径两种模式与回显、新工具分派、void 动作返回 |
-| `tests/test_service_tools.py`(8) | `focus_window` / `send_text` 服务层行为 |
+| `tests/test_service_tools.py`(13) | `focus_window` / `send_text` 服务层行为、`wait_seconds` 轮询与超时、`title` 精确过滤 |
 | `tests/test_mcp_dispatch.py`(3) | MCP 分派:省略坐标=原地点击 |
 
 ### 9.3 提交规范
@@ -549,6 +557,8 @@ python -m unittest tests.test_mouse_input -v
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-13 | **窗口等待**: `list_windows`/`focus_window` 新增 `wait_seconds`(轮询等待窗口出现,上限 60s,返回 `attempts/waited_ms`);`list_windows` 新增 `title` 过滤(只留最精确一档) |
+| 2026-09-13 | **窗口匹配**: `focus_window` 的 title 从"子串取第一个命中"改为分级排序(完全相等 > 词边界 > 前缀 > 子串),歧义时返回 `other_candidates` |
 | 2026-09-11 | **坐标契约**: 所有坐标工具支持 `coord=image\|screen` 并回显 `coord/img_size/screen_size`;`get_state`/`screenshot` 返回值带口径块 |
 | 2026-09-11 | **新增高层工具** `focus_window`(窗口置前)与 `send_text`(输入并提交,解决"Enter 只换行")` — 工具数 24 → 26 |
 | 2026-09-11 | 工具描述重写为「用途/坐标/参数/返回/坑」四要素;`focus` 修正在"窗口已在前台"时的误报失败;修复 void 动作返回 `null` 的回归 |
