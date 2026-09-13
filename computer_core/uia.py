@@ -17,9 +17,10 @@
   - vtable 索引是实测结论, 改动前必须重新验证(盲扫会 access violation)
 """
 import ctypes
+import time
 import uuid
 from ctypes import (POINTER, byref, c_void_p, c_ulong, c_ushort, c_ubyte,
-                    c_int, c_long, c_bool, HRESULT)
+                    c_int, c_long, c_bool, HRESULT, wintypes)
 
 CLSID_CUIAutomation = "{FF48DBA4-60EF-4201-AA87-54103EEF594E}"
 IID_IUIAutomation   = "{30CBE57D-D9D0-452A-AB13-7AC5AC4825EE}"
@@ -86,6 +87,23 @@ _user32.SetForegroundWindow.restype = c_bool
 _user32.SetForegroundWindow.argtypes = [c_void_p]
 _user32.GetForegroundWindow.restype = c_void_p
 _user32.GetForegroundWindow.argtypes = []
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_user32.GetWindowThreadProcessId.argtypes = [c_void_p, c_void_p]
+_user32.GetGUIThreadInfo.restype = wintypes.BOOL
+_user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, c_void_p]
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    """GetGUIThreadInfo 的输出: 前台线程真正持有键盘焦点的窗口。
+
+    GetForegroundWindow 只说明"谁在最前面", hwndFocus 才是**键盘事件实际去处**;
+    两者可能不一致(输入法、切换过程中、无激活窗口时)。
+    """
+    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                ("hwndActive", c_void_p), ("hwndFocus", c_void_p),
+                ("hwndCapture", c_void_p), ("hwndMenuOwner", c_void_p),
+                ("hwndMoveSize", c_void_p), ("hwndCaret", c_void_p),
+                ("rcCaret", wintypes.LONG * 4)]
 
 SW_RESTORE = 9          # ShowWindow: 还原并激活最小化窗口
 
@@ -289,18 +307,51 @@ class UIA:
                   for item in ranked[1:6]]
         return best, others
 
-    def focus(self, hwnd) -> bool:
-        """把窗口激活到前台(最小化时先还原)。返回"调用后它是否在前台"。
+    def foreground_info(self) -> dict:
+        """当前前台窗口 + 真实键盘焦点窗口(GetGUIThreadInfo)。
 
-        真机实测: 窗口已经在前台时 SetForegroundWindow 常常返回 0, 那不是失败, 所以先看
-        GetForegroundWindow。目标窗口若以管理员权限运行, 普通权限进程确实无法前置。
+        GetForegroundWindow 只说"谁在最前面", hwndFocus 才是键盘事件的实际去处。
         """
-        h = c_void_p(int(hwnd))
+        fg = int(_user32.GetForegroundWindow() or 0)
+        info = {"foreground": fg, "active": 0, "focus": 0}
+        if not fg:
+            return info
+        try:
+            tid = _user32.GetWindowThreadProcessId(c_void_p(fg), None)
+            g = _GUITHREADINFO()
+            g.cbSize = ctypes.sizeof(_GUITHREADINFO)
+            if _user32.GetGUIThreadInfo(tid, ctypes.byref(g)):
+                info["active"] = int(g.hwndActive or 0)
+                info["focus"] = int(g.hwndFocus or 0)
+        except OSError:
+            pass
+        return info
+
+    def focus(self, hwnd, wait_seconds: float = 2.0, poll_interval: float = 0.05) -> dict:
+        """激活窗口到前台, 并**确认它真的成了前台**才返回成功。
+
+        真机实测(2026-09-13): SetForegroundWindow 是**异步**的 —— 它返回非零时前台
+        可能还没切换完(GetForegroundWindow 此刻甚至返回 0)。旧实现直接信它的返回值,
+        于是 ok:true 之后紧接着注入的按键会打到**旧窗口**上(用户看到按键全进了浏览器)。
+        现在改成轮询确认, 确认失败就如实返回 ok:false + 实际前台窗口。
+
+        返回 {ok, already, foreground, active, focus}。
+        """
+        want = int(hwnd)
+        h = c_void_p(want)
         try:
             if _user32.IsIconic(h):
                 _user32.ShowWindow(h, SW_RESTORE)
-            if int(_user32.GetForegroundWindow() or 0) == int(hwnd):
-                return True
-            return bool(_user32.SetForegroundWindow(h))
+            if int(_user32.GetForegroundWindow() or 0) == want:
+                return {"ok": True, "already": True, **self.foreground_info()}
+            _user32.SetForegroundWindow(h)
+            deadline = time.monotonic() + max(0.0, float(wait_seconds))
+            while True:
+                info = self.foreground_info()
+                if info["foreground"] == want:
+                    return {"ok": True, "already": False, **info}
+                if time.monotonic() >= deadline:
+                    return {"ok": False, "already": False, **info}
+                time.sleep(max(0.0, poll_interval))
         except OSError:
-            return False
+            return {"ok": False, "already": False, "foreground": 0, "active": 0, "focus": 0}

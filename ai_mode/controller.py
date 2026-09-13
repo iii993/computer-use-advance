@@ -80,6 +80,8 @@ SYSTEM_PROMPT = """你是电脑操控 AI。你通过截图观察屏幕, 调用�
 {"action":"zoom_to_screen","px":..,"py":..}      把最近一次放大图里的像素换成坐标(img_x/img_y 可直接用于点击)
 {"action":"focus_window","title":"记事本"}        把窗口激活到前台(hwnd 或 title 二选一)
 {"action":"send_text","text":"...","submit":"ctrl+enter"} 输入文字并提交(注意: 多数 GUI 里单独 enter 只换行)
+{"action":"get_input_method","hwnd":可选}          查当前输入法(省略 hwnd = 当前前台窗口)
+{"action":"switch_input_method","layout":"en"}    切换输入法(layout=en 英文 / zh 中文)
 {"action":"finish","result":"任务完成说明"}       完成任务
 规则:
 - actions 数组按顺序执行, 可一次返回多个动作(减少往返)
@@ -89,6 +91,9 @@ SYSTEM_PROMPT = """你是电脑操控 AI。你通过截图观察屏幕, 调用�
 - move 只移动不点击, click 只点击(不给 x/y 就原地点击): 要"移过去→确认→再点"请分成两条动作
 - points 坐标序列与 x/y 互斥; gap_ms 是序列相邻两点的间歇, 与双击间隔无关; 三元点 [x,y,时间] 覆盖本点耗时
 - zoom 的 x/y 用屏幕坐标; 放大图里的像素交给 zoom_to_screen 换算(img_x/img_y 可直接用于 click/move)
+- **玩游戏 / 连发按键前必须先 switch_input_method(layout="en") 切到英文输入法**: 中文(微软拼音)
+  会拦截注入的按键(按键不进游戏), 还可能吞掉 KeyUp 造成"卡键"(角色一直往一个方向走)。
+  切完可用 get_input_method 复查 is_english=true 再开始按键。
 - 不要臆想屏幕内容, 以截图为准
 - 任务完成后输出 finish"""
 
@@ -337,6 +342,10 @@ class AIController:
                 svc.combo(action.get("keys", []))
             elif act == "slide":
                 svc.slide(action.get("dx", 0), action.get("dy", 0))
+            elif act == "get_input_method":
+                return svc.get_input_method(action.get("hwnd"))
+            elif act == "switch_input_method":
+                return svc.switch_input_method(action.get("layout", "en"), action.get("hwnd"))
             elif act == "switch_mode":
                 return svc.switch_mode(action.get("mode", ""))
             elif act == "set_config":

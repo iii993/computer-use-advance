@@ -53,7 +53,7 @@ class TestFocusWindow(unittest.TestCase):
     def test_focus_by_hwnd(self):
         svc = self._svc()
         fake = mock.Mock()
-        fake.focus.return_value = True
+        fake.focus.return_value = {"ok": True, "foreground": 7, "focus": 7}
         fake.find_window.return_value = (
             {"hwnd": 7, "name": "记事本", "class": "Notepad",
              "win32_title": "记事本", "rect": (0, 0, 100, 100)},
@@ -68,7 +68,7 @@ class TestFocusWindow(unittest.TestCase):
     def test_polls_until_window_appears(self):
         svc = self._svc()
         fake = mock.Mock()
-        fake.focus.return_value = True
+        fake.focus.return_value = {"ok": True, "foreground": 7, "focus": 7}
         fake.find_window.side_effect = [
             (None, []), (None, []),
             ({"hwnd": 7, "name": "Krita", "class": "Qt", "win32_title": "Krita",
@@ -163,6 +163,41 @@ class TestSendText(unittest.TestCase):
             svc.send_text("new", clear_first=True)
             cb.assert_called_once_with(["ctrl", "a"])
             self.assertTrue(tp.called)
+
+
+class TestInputMethod(unittest.TestCase):
+    """真机确认: 游戏窗口处于中文输入法(0x0804 微软拼音)时, 注入的按键会被 IME 吞掉。"""
+
+    def _svc(self):
+        return service.ComputerService(config={"ai": {}, "draw": {}})
+
+    def test_switch_defaults_to_foreground_window(self):
+        svc = self._svc()
+        fake = mock.Mock()
+        fake.foreground_info.return_value = {"foreground": 42, "focus": 42}
+        svc._uia = fake
+        with mock.patch("input_engine.ime.switch_to", return_value={"ok": True}) as sw:
+            r = svc.switch_input_method("en")
+            sw.assert_called_once_with("en", hwnd=42)
+            self.assertEqual(r["hwnd"], 42)
+
+    def test_switch_uses_explicit_hwnd(self):
+        svc = self._svc()
+        with mock.patch("input_engine.ime.switch_to", return_value={"ok": True}) as sw:
+            svc.switch_input_method("en", hwnd=99)
+            sw.assert_called_once_with("en", hwnd=99)
+
+    def test_get_input_method_uses_foreground(self):
+        svc = self._svc()
+        fake = mock.Mock()
+        fake.foreground_info.return_value = {"foreground": 7}
+        svc._uia = fake
+        with mock.patch("input_engine.ime.current_layout",
+                        return_value={"hkl": 1, "is_chinese": True}) as cl:
+            r = svc.get_input_method()
+            cl.assert_called_once_with(7)
+            self.assertEqual(r["hwnd"], 7)
+            self.assertTrue(r["is_chinese"])
 
 
 if __name__ == "__main__":

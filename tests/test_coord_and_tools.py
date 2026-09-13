@@ -92,7 +92,9 @@ class TestNewToolsDispatch(unittest.TestCase):
         names = [t["name"] for t in server.TOOLS]
         self.assertIn("focus_window", names)
         self.assertIn("send_text", names)
-        self.assertEqual(len(names), 26)
+        self.assertIn("switch_input_method", names)
+        self.assertIn("get_input_method", names)
+        self.assertEqual(len(names), 28)
         for t in server.TOOLS:
             if t["name"] in ("click", "move", "drag", "zoom"):
                 self.assertIn("coord", t["inputSchema"]["properties"], t["name"])

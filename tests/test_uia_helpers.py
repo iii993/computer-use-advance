@@ -1,4 +1,5 @@
 # tests/test_uia_helpers.py
+import ctypes
 import sys, os, unittest
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -59,32 +60,72 @@ class TestFindWindow(unittest.TestCase):
 
 
 class TestFocusSemantics(unittest.TestCase):
-    """真机暴露: 窗口已经在前台时 SetForegroundWindow 会失败, 但那不算失败。"""
+    """真机暴露(2026-09-13): SetForegroundWindow 是**异步**的 —— 返回非零时前台还没切换完
+    (那一刻 GetForegroundWindow 甚至是 0), 于是 ok:true 之后紧接着注入的按键打到了旧窗口
+    (用户看到按键全进了浏览器)。所以必须轮询确认才敢报成功。
+    """
 
     def _u(self):
         return uia.UIA.__new__(uia.UIA)
 
     def test_already_foreground_counts_as_success(self):
         with mock.patch.object(uia._user32, "GetForegroundWindow", return_value=42), \
-             mock.patch.object(uia._user32, "IsIconic", return_value=False):
-            self.assertTrue(self._u().focus(42))
+             mock.patch.object(uia._user32, "IsIconic", return_value=False), \
+             mock.patch.object(uia._user32, "GetWindowThreadProcessId", return_value=9), \
+             mock.patch.object(uia._user32, "GetGUIThreadInfo", return_value=0):
+            r = self._u().focus(42)
+            self.assertTrue(r["ok"])
+            self.assertTrue(r["already"])
 
-    def test_calls_set_foreground_when_not_foreground(self):
+    def test_waits_until_switch_actually_completes(self):
+        # 检查时前台是 7; SetForegroundWindow 之后仍是 7, 再查才变成 42
+        with mock.patch.object(uia._user32, "GetForegroundWindow", side_effect=[7, 7, 42]), \
+             mock.patch.object(uia._user32, "IsIconic", return_value=False), \
+             mock.patch.object(uia._user32, "GetWindowThreadProcessId", return_value=9), \
+             mock.patch.object(uia._user32, "GetGUIThreadInfo", return_value=0), \
+             mock.patch.object(uia._user32, "SetForegroundWindow", return_value=1) as sf, \
+             mock.patch.object(uia.time, "sleep"):
+            r = self._u().focus(42, wait_seconds=1, poll_interval=0)
+            self.assertTrue(r["ok"])
+            self.assertFalse(r["already"])
+            self.assertEqual(r["foreground"], 42)
+            sf.assert_called_once()
+
+    def test_reports_failure_when_switch_never_happens(self):
         with mock.patch.object(uia._user32, "GetForegroundWindow", return_value=7), \
              mock.patch.object(uia._user32, "IsIconic", return_value=False), \
-             mock.patch.object(uia._user32, "SetForegroundWindow", return_value=1) as sf:
-            self.assertTrue(self._u().focus(42))
-            sf.assert_called_once()
+             mock.patch.object(uia._user32, "GetWindowThreadProcessId", return_value=9), \
+             mock.patch.object(uia._user32, "GetGUIThreadInfo", return_value=0), \
+             mock.patch.object(uia._user32, "SetForegroundWindow", return_value=1), \
+             mock.patch.object(uia.time, "sleep"):
+            r = self._u().focus(42, wait_seconds=0)
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["foreground"], 7)
+
+    def test_reports_real_focus_window(self):
+        def fake_gti(tid, ptr):
+            info = ctypes.cast(ptr, ctypes.POINTER(uia._GUITHREADINFO)).contents
+            info.hwndActive = 42
+            info.hwndFocus = 99
+            return 1
+
+        with mock.patch.object(uia._user32, "GetForegroundWindow", return_value=42), \
+             mock.patch.object(uia._user32, "IsIconic", return_value=False), \
+             mock.patch.object(uia._user32, "GetWindowThreadProcessId", return_value=9), \
+             mock.patch.object(uia._user32, "GetGUIThreadInfo", side_effect=fake_gti):
+            r = self._u().focus(42)
+            self.assertEqual(r["foreground"], 42)
+            self.assertEqual(r["focus"], 99)
 
     def test_minimized_window_is_restored_first(self):
         with mock.patch.object(uia._user32, "GetForegroundWindow", return_value=7), \
              mock.patch.object(uia._user32, "IsIconic", return_value=True), \
+             mock.patch.object(uia._user32, "GetWindowThreadProcessId", return_value=9), \
+             mock.patch.object(uia._user32, "GetGUIThreadInfo", return_value=0), \
              mock.patch.object(uia._user32, "ShowWindow", return_value=1) as sw, \
              mock.patch.object(uia._user32, "SetForegroundWindow", return_value=1):
             self._u().focus(42)
             self.assertEqual(sw.call_args.args[1], uia.SW_RESTORE)
-
-
 class TestFindWindowRanking(unittest.TestCase):
     """真机暴露: title="Krita" 曾匹配到 "krita.e - Everything" 窗口 —— 子串匹配太宽松。"""
 

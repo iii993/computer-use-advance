@@ -248,6 +248,28 @@ TOOLS = [
                                     "clear_first": {"type": "boolean", "description": "先清空输入框(默认 false)"}},
                      "required": ["text"]}},
 
+    {"name": "get_input_method", "description":
+     "【观察通道】查当前输入法(IME)。省略 hwnd 时查**当前前台窗口**所在线程的布局。"
+     "返回 {hkl, hkl_hex, lang_id, name, is_chinese, is_english, klid, hwnd}。"
+     "【为什么要看它】中文(微软拼音)输入法会拦截注入的按键 —— 按键不进目标程序, 甚至吞掉 KeyUp 造成"
+     "\"卡键\"(角色一直往一个方向走)。玩游戏/连发按键前先用本工具确认, 中文就用 switch_input_method 切英文。",
+     "inputSchema": {"type": "object",
+                     "properties": {"hwnd": {"type": "number", "description": "目标窗口句柄(省略 = 当前前台窗口)"}}}},
+
+    {"name": "switch_input_method", "description":
+     "【高层工具】切换输入法(IME): layout=\"en\"(英文) / \"zh\"(中文简体)。"
+     "【为什么需要】玩游戏 / 连发 / 连续按键前**必须先切英文** —— 中文输入法会拦截注入的字符键(按键不进游戏),"
+     " 还可能吞 KeyUp 造成\"卡键\"(角色一直往一个方向走)。"
+     "【用法】先 focus_window 目标窗口再 switch_input_method(layout=\"en\")(省略 hwnd = 作用于当前前台窗口);"
+     " 也可定向 switch_input_method(layout=\"en\", hwnd=527378)。"
+     "【返回】{ok, layout, target_hwnd, before, requested, method, hwnd}。"
+     "【坑】切换经 PostMessage 异步生效, 切完建议用 get_input_method 复查 is_english=true 再开始按键。",
+     "inputSchema": {"type": "object",
+                     "properties": {"layout": {"type": "string", "enum": ["en", "zh"],
+                                               "description": "目标输入法: en=英文(游戏/连发必备), zh=中文简体"},
+                                    "hwnd": {"type": "number", "description": "目标窗口句柄(省略 = 当前前台窗口)"}},
+                     "required": ["layout"]}},
+
     {"name": "press_key", "description":
      "敲一次按键(按下并释放): 如 enter/escape/tab/space/backspace/delete/f1-f12/up/down/left/right/home/end/ctrl/alt/shift。"
      "【坑】单独 enter 在多数网页聊天框里只是换行, 发送请用 ctrl+enter(combo 或 send_text 的 submit)。",
@@ -349,7 +371,7 @@ TOOLS = [
 
     {"name": "run_actions", "description":
      "【批量】一次调用按顺序执行多个动作, 减少往返与 token。actions 是动作对象数组, 每个对象含 action 字段 + 该动作的参数(与对应单工具一致; 坐标类动作也支持 coord)。"
-     "支持: click / double_click / right_click / drag / mouse_down / mouse_up / scroll / slide / move / type_text / send_text / press_key / key_down / key_up / combo / hotkey / wait / zoom_to_screen / focus_window / switch_mode / set_config / set_brush / draw_curve / take_screenshot。"
+     "支持: click / double_click / right_click / drag / mouse_down / mouse_up / scroll / slide / move / type_text / send_text / switch_input_method / get_input_method / press_key / key_down / key_up / combo / hotkey / wait / zoom_to_screen / focus_window / switch_mode / set_config / set_brush / draw_curve / take_screenshot。"
      "【返回】{ok, results:[...]} 每项是各动作的结果。【坑】批内按顺序执行且不额外等待(需要停顿请插入 wait); zoom 返回图像, 因此不在批量里支持, 请单独调用。",
      "inputSchema": {"type": "object",
                      "properties": {"actions": {"type": "array", "items": {"type": "object"}}},
@@ -425,6 +447,10 @@ def _run_single(action: dict) -> dict:
         elif act == "draw_curve":
             pts = [_cpoint(p, coord) for p in action.get("points", [])]
             return _coord_echo(svc.draw_curve(pts, action.get("inject", True)), coord)
+        elif act == "switch_input_method":
+            return svc.switch_input_method(action.get("layout", "en"), action.get("hwnd"))
+        elif act == "get_input_method":
+            return svc.get_input_method(action.get("hwnd"))
         elif act == "focus_window":
             return svc.focus_window(hwnd=action.get("hwnd"), title=action.get("title"),
                                     wait_seconds=action.get("wait_seconds", 0))
@@ -502,6 +528,13 @@ def handle_tool_call(name: str, args: dict) -> dict:
             r.update(_coord_block("image"))
             r["note"] = "click/move 请用 img_x/img_y(image 口径); 画面或截图尺寸变化后请重新 zoom"
             return _text_result(json.dumps(r, ensure_ascii=False))
+        if name == "get_input_method":
+            return _text_result(json.dumps(svc.get_input_method(args.get("hwnd")),
+                                           ensure_ascii=False))
+        if name == "switch_input_method":
+            return _text_result(json.dumps(
+                svc.switch_input_method(args.get("layout", "en"), args.get("hwnd")),
+                ensure_ascii=False))
         if name == "list_windows":
             return _text_result(svc.describe_windows(
                 title=args.get("title"), wait_seconds=args.get("wait_seconds", 0)))

@@ -257,6 +257,37 @@ class ComputerService:
         return {"screen_x": sx, "screen_y": sy,
                 "seq": meta.get("seq"), "factor": meta.get("factor")}
 
+    # ---- 输入法(IME): 中文输入法会吞掉注入的按键, 游戏/连发前必须切英文 ----
+    def _foreground_hwnd_or(self, hwnd):
+        """省略 hwnd 时默认作用于**当前前台窗口** —— 这是最常用的语义。"""
+        if hwnd:
+            return int(hwnd)
+        try:
+            fg = int(self._uia_session().foreground_info().get("foreground") or 0)
+        except (OSError, AttributeError):
+            return None
+        return fg or None
+
+    def get_input_method(self, hwnd=None) -> dict:
+        """查输入法(默认查当前前台窗口所在线程的)。返回 is_chinese / is_english 等。"""
+        from input_engine import ime
+        target = self._foreground_hwnd_or(hwnd)
+        info = ime.current_layout(target)
+        info["hwnd"] = target
+        return info
+
+    def switch_input_method(self, layout: str = "en", hwnd=None) -> dict:
+        """切换输入法: layout="en"(英文, 游戏/连发必备) 或 "zh"。
+
+        hwnd 省略时作用于当前前台窗口 —— 配合 focus_window 用即可。
+        """
+        from input_engine import ime
+        target = self._foreground_hwnd_or(hwnd)
+        res = ime.switch_to(layout, hwnd=target)
+        res["hwnd"] = target
+        log.info("switch_input_method layout=%s hwnd=%s via %s", layout, target, res.get("method"))
+        return res
+
     def _uia_session(self):
         """惰性创建 UIA 会话(COM STA: 必须在同一线程内使用)。"""
         if self._uia is None:
@@ -327,20 +358,30 @@ class ComputerService:
             return {"ok": False, "attempts": attempts, "waited_ms": waited_ms,
                     "error": (f"未找到窗口 (hwnd={hwnd}, title={title!r}, "
                               f"等待 {wait_seconds}s 共尝试 {attempts} 次); 当前候选: {cands}")}
-        ok = u.focus(rec["hwnd"])
-        log.info("focus_window hwnd=%s title=%r -> ok=%s", rec["hwnd"], title, ok)
-        out = {"ok": bool(ok), "hwnd": rec["hwnd"],
+        finfo = u.focus(rec["hwnd"])
+        ok = bool(finfo.get("ok"))
+        log.info("focus_window hwnd=%s title=%r -> ok=%s foreground=%s focus=%s",
+                 rec["hwnd"], title, ok, finfo.get("foreground"), finfo.get("focus"))
+        out = {"ok": ok, "hwnd": rec["hwnd"],
                "name": rec.get("name") or rec.get("win32_title"),
                "class": rec.get("class"), "rect": rec.get("rect"),
-               "attempts": attempts, "waited_ms": waited_ms}
+               "attempts": attempts, "waited_ms": waited_ms,
+               # SetForegroundWindow 是异步的, 必须回报真实前台/焦点窗口
+               "foreground": finfo.get("foreground"), "focus": finfo.get("focus")}
         if others:
             # 有歧义时明确告知: 调用方应改用 hwnd 精确指定
             out["other_candidates"] = others
             out["note"] = ("标题匹配到多个窗口, 已选最精确的一个; "
                            "需要精确指定请用 list_windows 拿到 hwnd 再调用")
         if not ok:
-            out["note"] = ("窗口已定位但未能置前(可能受 Windows 前台锁定或权限限制); "
-                           "可直接用 rect 算出中心点坐标后 click 该区域")
+            out["note"] = ("窗口已定位, 但 2 秒内没能成为前台(当前前台 hwnd="
+                           + str(finfo.get("foreground"))
+                           + ") —— 可能是 Windows 前台锁定或权限限制。"
+                           "此时注入的按键会打到那个前台窗口上, 请勿直接输入")
+        elif finfo.get("focus"):
+            out["note"] = ("已确认: 前台 hwnd=" + str(finfo["foreground"])
+                           + ", 键盘焦点 hwnd=" + str(finfo["focus"])
+                           + " —— 现在可以安全 press_key / type_text")
         return out
 
     def send_text(self, text: str, submit_keys: list | None = None,
