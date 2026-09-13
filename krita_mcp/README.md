@@ -250,6 +250,28 @@ isn't enabled. Check *Tools → Scripts → MCP Bridge Status…*. If the menu e
 are missing, the plugin didn't load: enable it in the Python Plugin Manager and
 restart Krita.
 
+**菜单里没有 MCP Bridge(插件没被加载)** — 2026-09-13 实机踩坑记录,照顺序排查:
+
+1. **先看插件的启动落盘日志** `%APPDATA%\krita\krita_mcp_boot.log`:
+   - 文件不存在 → Krita 压根没 import 这个插件,继续第 2、3 步
+   - 出现 `bridge start FAILED: …` → 看 traceback(一般是端口/权限)
+   - 出现 `bridge started on port …` → 插件其实已经好了,问题在客户端那一侧
+   > Krita 是无控制台的 GUI 进程,`print` 和 traceback 会被直接丢掉,所以**不要看终端**,看这个文件。
+2. **确认 `enable_krita_mcp=true` 写在 `%LOCALAPPDATA%\kritarc`**。Krita 5.3 在 Windows 上读的是**这个**文件(不是 `%APPDATA%\krita\kritarc` —— 那个位置是干扰项,放那儿没用)。`install.ps1` 写的正是正确的那个。
+3. **`kritarc` 损坏会让插件静默不加载** ← 本次真凶。症状:Krita 启动要 20~90 秒、进程 `Responding=False`、`krita.log` 走到 `foreign_keys state: 0 -> 1` 之后停住,插件永远不加载,而 `boot.log` 始终为空。
+   修复(**会丢失 Krita 的窗口布局/快捷键等个人设置,先备份**):
+
+   ```powershell
+   Copy-Item "$env:LOCALAPPDATA\kritarc" "$env:LOCALAPPDATA\kritarc.bak"
+   Rename-Item "$env:LOCALAPPDATA\kritarc" 'kritarc.quarantine'
+   # 启动一次 Krita 让它重建配置, 再在新 kritarc 里写入(或直接重跑 install.ps1):
+   #   [python]
+   #   enable_krita_mcp=true
+   ```
+
+   修复后 `boot.log` 立刻出现完整链路,`9797` 端口进入 Listen。
+4. **顺带**:`%APPDATA%\krita\resourcecache.sqlite`(几十 MB)只是资源缩略图缓存,启动异常时可以移走让它重建,不影响画作与笔刷。
+
 **Tools don't appear in the client** — restart it after editing the config, and
 make sure the path to `mcp_server.py` is absolute.
 
