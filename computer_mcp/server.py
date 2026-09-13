@@ -308,18 +308,24 @@ TOOLS = [
     {"name": "list_windows", "description":
      "【观察通道】列出当前可见的顶层窗口(UIA 无障碍树), 返回文本清单: hwnd / 控件类型 / 屏幕矩形 rect / 类名 class / 标题 name。"
      "用途: 不截图也能知道有哪些窗口、它们在哪、句柄是多少(句柄可直接给 focus_window)。"
+     "【参数】title=只列标题匹配的窗口(匹配规则同 focus_window, 只给最精确那一档: title=\"Krita\" 不会把 \"krita.e - Everything\" 也列进来);"
+     " wait_seconds=窗口还没出现时轮询等待的秒数(默认 0 不等待, 上限 60)。"
      "【坑】UIA 只对支持无障碍接口的程序有效(Win32/WPF/WinForms/UWP/大体上 Electron); 游戏/Canvas/自绘 UI 可能读不到内容, 这类场景回到 screenshot + zoom。",
-     "inputSchema": {"type": "object", "properties": {}}},
+     "inputSchema": {"type": "object",
+                     "properties": {"title": {"type": "string", "description": "只看标题匹配的窗口(可省略)"},
+                                    "wait_seconds": {"type": "number", "description": "轮询等待窗口出现的秒数, 默认 0(不等待), 常用 3~10"}}}},
 
     {"name": "focus_window", "description":
      "【高层工具】把指定窗口激活到前台(最小化会先还原), 之后可以直接 type_text / send_text 输入到它, 或按 rect 计算坐标去点击。"
      "【定位】二选一: hwnd(来自 list_windows, 精确) 或 title(不区分大小写, 按 完全相等 > 词边界(如 \"文档 - Krita\") > 前缀 > 子串 打分选最优, 并优先有实际面积的窗口)。"
+     "【等待】wait_seconds>0 时轮询等待窗口出现(默认 0 不等待, 上限 60): 刚 Start-Process 拉起程序时窗口往往要几秒才注册, 传 wait_seconds=10 一次调用即可, 不必自己反复 list_windows 重试; 返回值带 attempts/waited_ms 便于判断。"
      "【歧义】title 命中多个窗口时, 返回值会带 other_candidates 列表 —— 那种情况请改用 hwnd。"
-     "【返回】{ok, hwnd, name, class, rect} 或 {ok:false, error}(error 里带当前候选窗口列表)。"
+     "【返回】{ok, hwnd, name, class, rect, attempts, waited_ms} 或 {ok:false, error, attempts, waited_ms}(error 里带当前候选窗口列表)。"
      "【坑】目标窗口若以管理员权限运行, 普通权限进程可能无法前置(Windows 限制); 聚焦成功不等于输入框已聚焦, 通常还要 click 一下输入框。",
      "inputSchema": {"type": "object",
                      "properties": {"hwnd": {"type": "number", "description": "窗口句柄, 来自 list_windows"},
-                                    "title": {"type": "string", "description": "窗口标题子串(不区分大小写)"}}}},
+                                    "title": {"type": "string", "description": "窗口标题(不区分大小写; 完全相等 > 词边界 > 前缀 > 子串)"},
+                                    "wait_seconds": {"type": "number", "description": "轮询等待窗口出现的秒数, 默认 0(不等待), 常用 3~10"}}}},
 
     {"name": "zoom", "description":
      "【观察通道】放大镜: 把 (x,y) 周围一小块屏幕放大(默认 10X, NEAREST 像素复制, 不做插值模糊)后返回图像, 用于看清小字/小图标/细线。"
@@ -420,7 +426,8 @@ def _run_single(action: dict) -> dict:
             pts = [_cpoint(p, coord) for p in action.get("points", [])]
             return _coord_echo(svc.draw_curve(pts, action.get("inject", True)), coord)
         elif act == "focus_window":
-            return svc.focus_window(hwnd=action.get("hwnd"), title=action.get("title"))
+            return svc.focus_window(hwnd=action.get("hwnd"), title=action.get("title"),
+                                    wait_seconds=action.get("wait_seconds", 0))
         elif act == "send_text":
             keys = action.get("submit_keys") or action.get("submit")
             return svc.send_text(action.get("text", ""), submit_keys=_parse_keys(keys),
@@ -496,7 +503,8 @@ def handle_tool_call(name: str, args: dict) -> dict:
             r["note"] = "click/move 请用 img_x/img_y(image 口径); 画面或截图尺寸变化后请重新 zoom"
             return _text_result(json.dumps(r, ensure_ascii=False))
         if name == "list_windows":
-            return _text_result(svc.describe_windows())
+            return _text_result(svc.describe_windows(
+                title=args.get("title"), wait_seconds=args.get("wait_seconds", 0)))
         if name == "run_actions":
             results = [_run_single(a) for a in args.get("actions", [])]
             return _text_result(json.dumps({"ok": True, "results": results}, ensure_ascii=False))

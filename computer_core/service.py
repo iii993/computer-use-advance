@@ -3,6 +3,7 @@ import base64
 import io
 import os
 import sys
+import time
 
 # vendor 依赖优先
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -263,26 +264,75 @@ class ComputerService:
             self._uia = UIA()
         return self._uia
 
-    def describe_windows(self, max_items: int = 30) -> str:
-        """列出可见顶层窗口(UIA 无障碍树, 文本)。"""
-        return self._uia_session().format_windows(max_items)
+    def describe_windows(self, max_items: int = 30, title=None,
+                         wait_seconds: float = 0.0, poll_interval: float = 0.4) -> str:
+        """列出可见顶层窗口(UIA 无障碍树, 文本)。
 
-    def focus_window(self, hwnd=None, title=None) -> dict:
-        """把指定窗口激活到前台(按 hwnd 或标题子串)。返回 {ok, hwnd, name, class, rect}。"""
+        - title: 只看标题匹配的窗口(匹配规则同 focus_window: 完全相等 > 词边界 > 前缀 > 子串)
+        - wait_seconds > 0: 轮询等待窗口出现 —— 给"刚 Start-Process 拉起程序,
+          窗口要等几秒才出现"的场景用, 避免调用方反复手工重查
+        """
+        u = self._uia_session()
+        limit = min(60.0, max(0.0, float(wait_seconds or 0)))
+        t0 = time.monotonic()
+        windows = []
+        while True:
+            windows = u.list_windows()
+            if title:
+                # 只保留"最精确那一档": title="Krita" 不该把 "krita.e - Everything"
+                # 这种只是恰好含关键词的窗口也列出来(真机踩过)
+                scored = [(u._title_score(title, w), w) for w in windows]
+                best = max([s for s, _ in scored], default=0)
+                windows = [w for s, w in scored if s == best] if best > 0 else []
+            if windows:
+                break
+            elapsed = time.monotonic() - t0
+            if elapsed >= limit:
+                break
+            time.sleep(min(max(0.0, poll_interval), max(0.0, limit - elapsed)))
+        if not windows:
+            return (f"(没有匹配 {title!r} 的可见窗口)" if title
+                    else "(未发现可见顶层窗口)")
+        return u.format_windows(max_items=max_items, windows=windows)
+
+    def focus_window(self, hwnd=None, title=None, wait_seconds: float = 0.0,
+                     poll_interval: float = 0.4) -> dict:
+        """把指定窗口激活到前台(按 hwnd 或标题)。
+
+        返回 {ok, hwnd, name, class, rect, attempts, waited_ms}。
+
+        wait_seconds > 0: 轮询等待窗口出现 —— 程序刚启动时窗口往往要几秒才注册,
+        以前只能靠调用方反复 list_windows 手工重试。
+        """
         if hwnd is None and not title:
             raise ValueError("focus_window 需要 hwnd 或 title 之一")
         u = self._uia_session()
-        rec, others = u.find_window(hwnd=hwnd, title=title, with_candidates=True)
+        limit = min(60.0, max(0.0, float(wait_seconds or 0)))
+        t0 = time.monotonic()
+        attempts = 0
+        rec, others = None, []
+        while True:
+            attempts += 1
+            rec, others = u.find_window(hwnd=hwnd, title=title, with_candidates=True)
+            if rec is not None:
+                break
+            elapsed = time.monotonic() - t0
+            if elapsed >= limit:
+                break
+            time.sleep(min(max(0.0, poll_interval), max(0.0, limit - elapsed)))
+        waited_ms = int((time.monotonic() - t0) * 1000)
         if rec is None:
             cands = [f"{w.get('hwnd')}:{w.get('name') or w.get('win32_title')}"
                      for w in u.list_windows()[:10]]
-            return {"ok": False,
-                    "error": f"未找到窗口 (hwnd={hwnd}, title={title!r}); 当前候选: {cands}"}
+            return {"ok": False, "attempts": attempts, "waited_ms": waited_ms,
+                    "error": (f"未找到窗口 (hwnd={hwnd}, title={title!r}, "
+                              f"等待 {wait_seconds}s 共尝试 {attempts} 次); 当前候选: {cands}")}
         ok = u.focus(rec["hwnd"])
         log.info("focus_window hwnd=%s title=%r -> ok=%s", rec["hwnd"], title, ok)
         out = {"ok": bool(ok), "hwnd": rec["hwnd"],
                "name": rec.get("name") or rec.get("win32_title"),
-               "class": rec.get("class"), "rect": rec.get("rect")}
+               "class": rec.get("class"), "rect": rec.get("rect"),
+               "attempts": attempts, "waited_ms": waited_ms}
         if others:
             # 有歧义时明确告知: 调用方应改用 hwnd 精确指定
             out["other_candidates"] = others

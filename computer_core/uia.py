@@ -196,10 +196,17 @@ class UIA:
         _user32.EnumWindows(_EnumWindowsProc(_cb), None)
         return found
 
-    def format_windows(self, max_items: int = 30) -> str:
-        """把窗口清单渲染成紧凑文本, 直接给模型读。"""
+    def format_windows(self, max_items: int = 30, windows=None, title=None) -> str:
+        """把窗口清单渲染成紧凑文本, 直接给模型读。
+
+        windows 给了就用它(调用方可能已经过滤/排序), 否则现取 list_windows();
+        title 给了则只保留标题匹配的窗口。
+        """
+        items = list(windows) if windows is not None else self.list_windows()
+        if title:
+            items = [w for w in items if self._title_score(title, w) > 0]
         lines = []
-        for i, w in enumerate(self.list_windows()[:max_items], 1):
+        for i, w in enumerate(items[:max_items], 1):
             name = w.get("name") or w.get("win32_title") or ""
             lines.append(
                 f"[{i}] hwnd={w['hwnd']} type={w.get('control_type_name','?')} "
