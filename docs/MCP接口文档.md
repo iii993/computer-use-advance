@@ -144,6 +144,8 @@ sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 | 24 | `zoom` | 10X 放大镜(返回图像 + 映射元数据) | ✔ |
 | 25 | `zoom_to_screen` | 放大图像素 → 可用坐标 | — |
 | 26 | `run_actions` | 批量按顺序执行多个动作 | 视动作而定 |
+| 27 | `get_input_method` | 查当前输入法(IME);省略 hwnd = 当前前台窗口 | `{hkl_hex, lang_id, name, is_chinese, is_english, ...}` |
+| 28 | `switch_input_method` | 切换输入法(`en` / `zh`);游戏/连发前必须切英文 | `{ok, layout, target_hwnd, before, requested, method}` |
 
 ---
 
@@ -294,6 +296,22 @@ sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 - `key_down` / `key_up`: 按住 / 释放(配合实现长按或按住修饰键再操作)
 - `combo`: `{keys:["ctrl","enter"]}` 按顺序按下再逆序释放
 - 坑: 单独 `press_key("enter")` 在网页聊天框通常只换行,发送用 `combo([ctrl,enter])` 或 `send_text(submit=...)`
+
+#### 输入法(IME)控制
+
+> **玩游戏 / 连发按键前必须切英文。** 实测(2026-09-13):游戏窗口(Tk,双蛇)当时处于 `0x0804` 微软拼音,
+> 注入的按键被 IME 拦截、**全部落到了别的窗口**;切到 `0x0409` English 后按键才真正到达游戏。
+> 中文输入法还可能吞掉 KeyUp 造成"卡键"(角色一直往一个方向走)。
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `get_input_method` | `hwnd?` | 查输入法(省略 = 当前前台窗口所在线程)。返回 `{hkl, hkl_hex, lang_id, name, is_chinese, is_english, klid, thread_id, hwnd}` |
+| `switch_input_method` | `layout`(必填, `en`\|`zh`), `hwnd?` | 切换输入法;省略 hwnd = 作用于当前前台窗口,也可定向切给某个窗口。返回 `{ok, layout, target_hwnd, before, requested, method, hwnd}` |
+
+- 实现:纯 ctypes(`input_engine/ime.py`)。定向切换用 **`PostMessage(WM_INPUTLANGCHANGEREQUEST)`** —— 切输入法的标准做法
+- 已知 `lang_id`:`0x0409` English (US) / `0x0804` 中文(简体) / `0x0404` 中文(繁体) / `0x0411` 日本語
+- 坑:切换经 PostMessage **异步**生效,切完请用 `get_input_method` 复查 `is_english=true` 再开始按键
+- 推荐顺序: `focus_window(hwnd=…)` → `switch_input_method(layout="en")` → `get_input_method()` 确认 → 再 `press_key` / `key_down`
 
 ### 5.4 其他工具
 
@@ -517,9 +535,10 @@ python -m unittest tests.test_mouse_input -v
 | `tests/test_mouse_input.py`(18) | 按键映射、移动/点击独立、序列校验与执行节奏、旧位置参数兼容 |
 | `tests/test_service_click.py`(11) | 服务层参数转发、序列、校验、smooth 定位耗时 |
 | `tests/test_observe_zoom.py`(13) | 区域钳制、倍率预算、放大图像素反算与往返一致 |
-| `tests/test_uia_helpers.py`(7) | CLSID/IID、vtable 索引锁定、窗口匹配、focus 语义 |
+| `tests/test_uia_helpers.py`(11) | CLSID/IID、vtable 索引锁定、窗口匹配、focus 语义与**前台切换确认** |
 | `tests/test_coord_and_tools.py`(18) | 坐标口径两种模式与回显、新工具分派、void 动作返回 |
-| `tests/test_service_tools.py`(13) | `focus_window` / `send_text` 服务层行为、`wait_seconds` 轮询与超时、`title` 精确过滤 |
+| `tests/test_service_tools.py`(16) | `focus_window` / `send_text` / **输入法**服务层行为、`wait_seconds` 轮询与超时、`title` 精确过滤 |
+| `tests/test_ime.py`(9) | 输入法 HKL 解析、en/zh 切换路径、已是英文时不重复切换 |
 | `tests/test_mcp_dispatch.py`(3) | MCP 分派:省略坐标=原地点击 |
 
 ### 9.3 提交规范
@@ -557,6 +576,8 @@ python -m unittest tests.test_mouse_input -v
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-13 | **输入法控制**: 新增 `get_input_method` / `switch_input_method`(纯 ctypes,定向 `PostMessage(WM_INPUTLANGCHANGEREQUEST)`);真机确认中文微软拼音会吞掉注入按键 —— **游戏/连发前必须先切英文**。工具数 26 → **28** |
+| 2026-09-13 | **focus 确认**: `focus_window` 改为**轮询确认前台真的切换完成**才报成功(`SetForegroundWindow` 是异步的,返回非零 ≠ 已切换),返回值新增 `foreground` / `focus` |
 | 2026-09-13 | **窗口等待**: `list_windows`/`focus_window` 新增 `wait_seconds`(轮询等待窗口出现,上限 60s,返回 `attempts/waited_ms`);`list_windows` 新增 `title` 过滤(只留最精确一档) |
 | 2026-09-13 | **窗口匹配**: `focus_window` 的 title 从"子串取第一个命中"改为分级排序(完全相等 > 词边界 > 前缀 > 子串),歧义时返回 `other_candidates` |
 | 2026-09-11 | **坐标契约**: 所有坐标工具支持 `coord=image\|screen` 并回显 `coord/img_size/screen_size`;`get_state`/`screenshot` 返回值带口径块 |
