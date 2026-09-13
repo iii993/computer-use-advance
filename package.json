@@ -1,0 +1,29 @@
+{
+  "name": "computer-use-advance",
+  "version": "0.1.0",
+  "description": "电脑操控插件 (Computer Use Advance) —— 把 cu-a 的 MCP server(computer / krita)挂进 DSH profile: 截图/鼠标/键盘/窗口/放大镜/输入法 + Krita 绘画",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "mcp",
+    "computer-use",
+    "automation",
+    "windows"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-mcp-client": "*"
+  }
+}

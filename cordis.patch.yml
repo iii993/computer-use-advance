@@ -1,0 +1,31 @@
+# computer-use-advance: 把本仓库的两个 MCP server 挂进 DSH profile。
+#
+# 真正干活的是 Python 侧:
+#   computer_mcp/server.py  —— 28 个电脑操控工具(截图/鼠标/键盘/窗口/输入法)
+#   krita_mcp/mcp_server.py —— Krita 绘画桥接
+# 这里只负责向 profile 插入 mcp-client 桥接条目, 工具的 schema 只在 Python 里维护一份。
+#
+# ⚠️ 换机器/换路径时: 跑一次 `powershell -File install.ps1`, 它会自动把下面两处
+#    的路径改成本机实际值; 也可以手改。
+- insert:
+    - id: mcp-computer
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: computer
+        transport: stdio
+        command: 'python'
+        args:
+          - 'H:\cu-a\computer_mcp\server.py'
+        env:
+          # Windows 下 Python 的 stdio 默认走 GBK, 会让工具描述与中文参数乱码
+          PYTHONIOENCODING: 'utf-8'
+
+- insert:
+    - id: mcp-krita
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: krita
+        transport: stdio
+        command: 'python'
+        args:
+          - 'H:\cu-a\krita_mcp\mcp_server.py'

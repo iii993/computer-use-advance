@@ -1,7 +1,7 @@
 # 电脑操控插件 (Computer Control Plugin) - 使用说明
 
 一个 Windows 电脑操控插件: 提供 **游戏 / 绘画 / 工作** 三种操控模式 + **AI 指挥官** 自动模式,
-支持全局热键切换、触笔压力模拟。(DSH MCP 集成已卸载, 见第 9 节)
+支持全局热键切换、触笔压力模拟。(已封装为可分发的 `computer-use-advance` DSH 插件, 见第 9 节)
 
 ---
 
@@ -242,6 +242,31 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 > 注册位置: `H:\dsh-home\profiles\web\cordis.patch.yml` 里的 `mcp-computer` / `mcp-krita` 两个 insert 块。
 > **保存即热加载**(cordis HMR):无需重启 DSH web,实测约 8 秒内新子进程起来、工具列表刷新。
 > (2026-09-06 曾因"agent 场景作用有限"卸下;补齐坐标契约与高层工具后重新挂回。)
+### 作为可分发的 DSH 插件(`computer-use-advance`)
+
+本仓库根目录同时就是一个**标准 DSH 插件包** —— 别人 clone 下来两条命令就能挂上:
+
+```powershell
+# 1) 装包(dsh plugin 只是把参数转发给 profile 目录里的 pnpm)
+dsh plugin --profile web add github:iii993/computer-use-advance
+
+# 2) 启用: 在 profile 的 package.json 里把 "computer-use-advance" 加进 dsh.profile.bundles
+#    路径: $DSH_HOME/profiles/web/package.json
+
+# 3) 换机器/换路径时, 先跑一次安装脚本自动改写 python 与仓库路径
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+| 文件 | 作用 |
+| --- | --- |
+| `package.json` | `dsh.bundle.patch` 指向 patch —— `dsh plugin add` 靠这个字段识别它是插件 |
+| `cordis.patch.yml` | 向 profile 插入 `mcp-computer` / `mcp-krita` 两个 mcp-client 条目 |
+| `lib/index.js` | 空壳: 工具 schema 只在 `computer_mcp/server.py` 维护一份, 不在 JS 里重写 |
+| `install.ps1` | 探测本机 python 与仓库路径, 自动改写 patch 里的路径 |
+
+> 原理: `dsh plugin add <包>` 只是把参数转发给 profile 目录里的 `pnpm add`;真正拉起
+> Python 进程、注册工具的是官方的 `@deepseek-ai/dsh-mcp-client`。
+
 
 现在 agent 可直接调用以下工具(**不需要写脚本**):
 
