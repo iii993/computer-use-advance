@@ -255,14 +255,16 @@ AI 可通过 `set_config` 修改 `ai.whitelist` 内的参数(立即生效):
 | `mcp__computer__list_windows` | UIA 无障碍树窗口清单(文本) |
 | `mcp__computer__focus_window` | 按 hwnd/标题把窗口激活到前台 |
 | `mcp__computer__send_text` | 输入文字并按组合键提交(如 ctrl+enter) |
+| `mcp__computer__get_input_method` | 查当前输入法(中文输入法会吞掉注入的按键) |
+| `mcp__computer__switch_input_method` | 切换输入法(**游戏/连发前必须先切 en**) |
 | `mcp__computer__type_text` / `press_key` / `combo` | 键盘输入 |
 | `mcp__computer__switch_mode` | 切换 game/draw/work 模式 |
 | `mcp__computer__draw_curve` / `set_brush` | 绘画操作 |
 | `mcp__computer__set_config` | 白名单内改配置 |
 | `mcp__computer__check_vision` | 检测模型识图能力 |
 
-> 📘 **完整接口文档(坐标契约 / 26 个工具逐个说明 / Python API / 新增工具步骤)见 [docs/MCP接口文档.md](docs/MCP接口文档.md)。**
-> 当前工具数 **26**;所有坐标工具支持 `coord=image|screen`(缺省 image=最近一次截图内的像素),返回值会回显口径。
+> 📘 **完整接口文档(坐标契约 / 28 个工具逐个说明 / Python API / 新增工具步骤)见 [docs/MCP接口文档.md](docs/MCP接口文档.md)。**
+> 当前工具数 **28**;所有坐标工具支持 `coord=image|screen`(缺省 image=最近一次截图内的像素),返回值会回显口径。
 
 ### 绘画 MCP(krita)
 
